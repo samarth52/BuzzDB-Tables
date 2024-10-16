@@ -229,8 +229,8 @@ public:
         auto serializedTuple = tuple->serialize();
         size_t tuple_size = serializedTuple.size();
 
-        std::cout << "Tuple size: " << tuple_size << " bytes\n";
-        assert(tuple_size == 38);
+        // std::cout << "Tuple size: " << tuple_size << " bytes\n";
+        // assert(tuple_size == 38);
 
         // Check for first slot with enough space
         size_t slot_itr = 0;
@@ -769,11 +769,12 @@ public:
         currentPageIndex = 0;
         currentSlotIndex = 0;
         currentTuple.reset(); // Ensure currentTuple is reset
-        loadNextTuple();
+        tuple_count = 0;
+        // loadNextTuple();
     }
 
     bool next() override {
-        if (!currentTuple) return false; // No more tuples available
+        // if (!currentTuple) return false; // No more tuples available
 
         loadNextTuple();
         return currentTuple != nullptr;
@@ -784,10 +785,10 @@ public:
         currentPageIndex = 0;
         currentSlotIndex = 0;
         currentTuple.reset();
+        tuple_count = 0;
     }
 
     std::vector<std::unique_ptr<Field>> getOutput() override {
-        std::cout << currentTuple->serialize() << std::endl;
         if (currentTuple) {
             return std::move(currentTuple->fields);
         }
@@ -1494,13 +1495,13 @@ public:
 
         assert(status == true);
 
-        if (tuple_insertion_attempt_counter % 10 != 0) {
-            // Assuming you want to delete the first tuple from the first page
-            DeleteOperator delOp(buffer_manager, 0, 0); 
-            if (!delOp.next()) {
-                std::cerr << "Failed to delete tuple." << std::endl;
-            }
-        }
+        // if (tuple_insertion_attempt_counter % 10 != 0) {
+        //     // Assuming you want to delete the first tuple from the first page
+        //     DeleteOperator delOp(buffer_manager, 0, 0); 
+        //     if (!delOp.next()) {
+        //         std::cerr << "Failed to delete tuple." << std::endl;
+        //     }
+        // }
 
 
     }
@@ -1535,9 +1536,7 @@ int main() {
     int field1, field2;
     int i = 0;
     while (inputFile >> field1 >> field2) {
-        if(i++ % 10000 == 0){
-            db.insert(field1, field2);
-        }
+        db.insert(field1, field2);
     }
 
     auto start = std::chrono::high_resolution_clock::now();
