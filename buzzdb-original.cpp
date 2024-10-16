@@ -397,7 +397,7 @@ constexpr size_t MAX_FILE_STREAMS_IN_MEMORY = 10;
 
 class StorageManager {
 private:
-    std::unordered_map<TableID, std::unique_ptr<std::fstream>> file_stream_map;
+    std::unordered_map<TableID, std::fstream> file_stream_map;
     std::unordered_map<TableID, size_t> num_pages_map;
     std::unique_ptr<LruPolicy<TableID>> policy;
 
@@ -407,19 +407,19 @@ private:
     }
 
     void open_stream(TableID table_id) {
-        std::unique_ptr<std::fstream> file_stream = std::make_unique<std::fstream>();
+        // std::unique_ptr<std::fstream> file_stream = std::make_unique<std::fstream>();
+        std::fstream file_stream;
         std::string database_filename = get_database_filename(table_id);
-        file_stream->open(database_filename, std::ios::in | std::ios::out);
+        file_stream.open(database_filename, std::ios::in | std::ios::out);
         if (!file_stream) {
             // If file does not exist, create it
-            file_stream->clear(); // Reset the state
-            file_stream->open(database_filename, std::ios::out);
+            file_stream.clear(); // Reset the state
+            file_stream.open(database_filename, std::ios::out);
         }
-        file_stream->close(); 
-        file_stream->open(database_filename, std::ios::in | std::ios::out); 
-
-        file_stream->seekg(0, std::ios::end);
-        TableID num_pages = file_stream->tellg() / PAGE_SIZE;
+        file_stream.close(); 
+        file_stream.open(database_filename, std::ios::in | std::ios::out); 
+        file_stream.seekg(0, std::ios::end);
+        TableID num_pages = file_stream.tellg() / PAGE_SIZE;
 
         file_stream_map[table_id] = std::move(file_stream);
         num_pages_map[table_id] = num_pages;
@@ -432,8 +432,8 @@ private:
 
     void close_stream(TableID table_id) {
         if (file_stream_map.find(table_id) != file_stream_map.end()) {
-            if (file_stream_map[table_id]->is_open()) {
-                file_stream_map[table_id]->close();
+            if (file_stream_map[table_id].is_open()) {
+                file_stream_map[table_id].close();
             }
             file_stream_map.erase(table_id);
         }
@@ -460,19 +460,23 @@ public:
     }
 
     ~StorageManager() {
-        for (auto it = num_pages_map.begin(); it != num_pages_map.end(); ) {
-            close_stream(it->first);
+        for (auto it = file_stream_map.begin(); it != file_stream_map.end(); it++) {
+            if (it->second.is_open()) {
+                it->second.close();
+            }
         }
+        file_stream_map.clear();
+        num_pages_map.clear();
     }
 
     // Read a page from disk
     std::unique_ptr<SlottedPage> load(TableID table_id, PageID page_id) {
         check_and_load_stream(table_id);
-        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
-        file_stream->seekg(page_id * PAGE_SIZE, std::ios::beg);
+        std::fstream& file_stream = file_stream_map[table_id];
+        file_stream.seekg(page_id * PAGE_SIZE, std::ios::beg);
         auto page = std::make_unique<SlottedPage>();
         // Read the content of the file into the page
-        if(file_stream->read(page->page_data.get(), PAGE_SIZE)) {
+        if(file_stream.read(page->page_data.get(), PAGE_SIZE)) {
             //std::cout << "Page read successfully from file." << std::endl;
         } else {
             std::cerr << "Error: Unable to read data from the file :: Table ID: " << table_id << ". \n";
@@ -484,30 +488,30 @@ public:
     // Write a page to disk
     void flush(TableID table_id, PageID page_id, const std::unique_ptr<SlottedPage>& page) {
         check_and_load_stream(table_id);
-        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
+        std::fstream& file_stream = file_stream_map[table_id];
         size_t page_offset = page_id * PAGE_SIZE;        
 
         // Move the write pointer
-        file_stream->seekp(page_offset, std::ios::beg);
-        file_stream->write(page->page_data.get(), PAGE_SIZE);        
-        file_stream->flush();
+        file_stream.seekp(page_offset, std::ios::beg);
+        file_stream.write(page->page_data.get(), PAGE_SIZE);        
+        file_stream.flush();
     }
 
     // Extend database file by one page
     void extend(TableID table_id) {
         std::cout << "Extending database file :: Table ID: " << table_id << "\n";
         check_and_load_stream(table_id);
-        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
+        std::fstream& file_stream = file_stream_map[table_id];
 
         // Create a slotted page
         auto empty_slotted_page = std::make_unique<SlottedPage>();
 
         // Move the write pointer
-        file_stream->seekp(0, std::ios::end);
+        file_stream.seekp(0, std::ios::end);
 
         // Write the page to the file, extending it
-        file_stream->write(empty_slotted_page->page_data.get(), PAGE_SIZE);
-        file_stream->flush();
+        file_stream.write(empty_slotted_page->page_data.get(), PAGE_SIZE);
+        file_stream.flush();
 
         // Update number of pages
         num_pages_map[table_id] += 1;
