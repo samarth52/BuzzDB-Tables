@@ -494,6 +494,8 @@ public:
                 std::cout << "Evicting page " << evictedPageId << "\n";
                 storage_manager.flush(evictedPageId, 
                                       pageMap[evictedPageId]);
+                pageMap[evictedPageId].reset();
+                pageMap.erase(evictedPageId);
             }
         }
 
