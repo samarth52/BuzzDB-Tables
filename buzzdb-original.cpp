@@ -319,125 +319,50 @@ public:
     }
 };
 
-const std::string database_filename = "buzzdb.dat";
-
-class StorageManager {
-public:    
-    std::fstream fileStream;
-    size_t num_pages = 0;
-
-public:
-    StorageManager(){
-        fileStream.open(database_filename, std::ios::in | std::ios::out);
-        if (!fileStream) {
-            // If file does not exist, create it
-            fileStream.clear(); // Reset the state
-            fileStream.open(database_filename, std::ios::out);
-        }
-        fileStream.close(); 
-        fileStream.open(database_filename, std::ios::in | std::ios::out); 
-
-        fileStream.seekg(0, std::ios::end);
-        num_pages = fileStream.tellg() / PAGE_SIZE;
-
-        std::cout << "Storage Manager :: Num pages: " << num_pages << "\n";        
-        if(num_pages == 0){
-            extend();
-        }
-
-    }
-
-    ~StorageManager() {
-        if (fileStream.is_open()) {
-            fileStream.close();
-        }
-    }
-
-    // Read a page from disk
-    std::unique_ptr<SlottedPage> load(uint16_t page_id) {
-        fileStream.seekg(page_id * PAGE_SIZE, std::ios::beg);
-        auto page = std::make_unique<SlottedPage>();
-        // Read the content of the file into the page
-        if(fileStream.read(page->page_data.get(), PAGE_SIZE)){
-            //std::cout << "Page read successfully from file." << std::endl;
-        }
-        else{
-            std::cerr << "Error: Unable to read data from the file. \n";
-            exit(-1);
-        }
-        return page;
-    }
-
-    // Write a page to disk
-    void flush(uint16_t page_id, const std::unique_ptr<SlottedPage>& page) {
-        size_t page_offset = page_id * PAGE_SIZE;        
-
-        // Move the write pointer
-        fileStream.seekp(page_offset, std::ios::beg);
-        fileStream.write(page->page_data.get(), PAGE_SIZE);        
-        fileStream.flush();
-    }
-
-    // Extend database file by one page
-    void extend() {
-        std::cout << "Extending database file \n";
-
-        // Create a slotted page
-        auto empty_slotted_page = std::make_unique<SlottedPage>();
-
-        // Move the write pointer
-        fileStream.seekp(0, std::ios::end);
-
-        // Write the page to the file, extending it
-        fileStream.write(empty_slotted_page->page_data.get(), PAGE_SIZE);
-        fileStream.flush();
-
-        // Update number of pages
-        num_pages += 1;
-    }
-
-};
-
-using PageID = uint16_t;
-
-class Policy {
-public:
-    virtual bool touch(PageID page_id) = 0;
-    virtual PageID evict() = 0;
-    virtual ~Policy() = default;
-};
-
-void printList(std::string list_name, const std::list<PageID>& myList) {
+template <typename T>
+void printList(std::string list_name, const std::list<T>& myList) {
         std::cout << list_name << " :: ";
-        for (const PageID& value : myList) {
+        for (const T& value : myList) {
             std::cout << value << ' ';
         }
         std::cout << '\n';
 }
 
-class LruPolicy : public Policy {
+template <typename T>
+class Policy {
+public:
+    virtual bool touch(T page_id) = 0;
+    virtual T evict() = 0;
+    virtual ~Policy() = default;
+};
+
+template <typename T>
+class LruPolicy : public Policy<T> {
 private:
     // List to keep track of the order of use
-    std::list<PageID> lruList;
+    std::list<T> lruList;
+
+    // Default invalid value
+    const T invalid_value;
 
     // Map to find a page's iterator in the list efficiently
-    std::unordered_map<PageID, std::list<PageID>::iterator> map;
+    std::unordered_map<T, typename std::list<T>::iterator> map;
 
     size_t cacheSize;
 
 public:
 
-    LruPolicy(size_t cacheSize) : cacheSize(cacheSize) {}
+    LruPolicy(size_t cacheSize, T invalid_value) : cacheSize(cacheSize), invalid_value(invalid_value) {}
 
-    bool touch(PageID page_id) override {
+    bool touch(T id) override {
         //printList("LRU", lruList);
 
         bool found = false;
-        // If page already in the list, remove it
-        if (map.find(page_id) != map.end()) {
+        // If id already in the list, remove it
+        if (map.find(id) != map.end()) {
             found = true;
-            lruList.erase(map[page_id]);
-            map.erase(page_id);            
+            lruList.erase(map[id]);
+            map.erase(id);            
         }
 
         // If cache is full, evict
@@ -446,79 +371,241 @@ public:
         }
 
         if(lruList.size() < cacheSize){
-            // Add the page to the front of the list
-            lruList.emplace_front(page_id);
-            map[page_id] = lruList.begin();
+            // Add the id to the front of the list
+            lruList.emplace_front(id);
+            map[id] = lruList.begin();
         }
 
         return found;
     }
 
-    PageID evict() override {
-        // Evict the least recently used page
-        PageID evictedPageId = INVALID_VALUE;
+    T evict() override {
+        // Evict the least recently used id
+        T evictedId = invalid_value;
         if(lruList.size() != 0){
-            evictedPageId = lruList.back();
-            map.erase(evictedPageId);
+            evictedId = lruList.back();
+            map.erase(evictedId);
             lruList.pop_back();
         }
-        return evictedPageId;
+        return evictedId;
+    }
+};
+
+using TableID = size_t;
+using PageID = uint16_t;
+constexpr size_t MAX_FILE_STREAMS_IN_MEMORY = 10;
+
+class StorageManager {
+private:
+    std::unordered_map<TableID, std::unique_ptr<std::fstream>> file_stream_map;
+    std::unordered_map<TableID, size_t> num_pages_map;
+    std::unique_ptr<LruPolicy<TableID>> policy;
+
+private:
+    std::string get_database_filename(TableID table_id) {
+        return "database_files/" + std::to_string(table_id) + ".dat";
+    }
+
+    void open_stream(TableID table_id) {
+        std::unique_ptr<std::fstream> file_stream = std::make_unique<std::fstream>();
+        std::string database_filename = get_database_filename(table_id);
+        file_stream->open(database_filename, std::ios::in | std::ios::out);
+        if (!file_stream) {
+            // If file does not exist, create it
+            file_stream->clear(); // Reset the state
+            file_stream->open(database_filename, std::ios::out);
+        }
+        file_stream->close(); 
+        file_stream->open(database_filename, std::ios::in | std::ios::out); 
+
+        file_stream->seekg(0, std::ios::end);
+        TableID num_pages = file_stream->tellg() / PAGE_SIZE;
+
+        file_stream_map[table_id] = std::move(file_stream);
+        num_pages_map[table_id] = num_pages;
+
+        std::cout << "Storage Manager :: Table ID: " << table_id << " :: Num pages: " << num_pages << "\n";        
+        if(num_pages == 0){
+            extend(table_id);
+        }
+    }
+
+    void close_stream(TableID table_id) {
+        if (file_stream_map.find(table_id) != file_stream_map.end()) {
+            if (file_stream_map[table_id]->is_open()) {
+                file_stream_map[table_id]->close();
+            }
+            file_stream_map.erase(table_id);
+        }
+        if (num_pages_map.find(table_id) != num_pages_map.end()) {
+            num_pages_map.erase(table_id);
+        }
+    }
+
+    void check_and_load_stream(TableID table_id) {
+        if (file_stream_map.find(table_id) == file_stream_map.end()) {
+            if (file_stream_map.size() >= MAX_FILE_STREAMS_IN_MEMORY) {
+                TableID evicted_table_id = policy->evict();
+                if (evicted_table_id != INVALID_VALUE) {
+                    close_stream(evicted_table_id);
+                }
+            }
+            open_stream(table_id);
+        }
+        policy->touch(table_id);
+    }
+
+public:
+    StorageManager() : policy(std::make_unique<LruPolicy<TableID>>(MAX_FILE_STREAMS_IN_MEMORY, INVALID_VALUE)) {
+    }
+
+    ~StorageManager() {
+        for (auto it = num_pages_map.begin(); it != num_pages_map.end(); ) {
+            close_stream(it->first);
+        }
+    }
+
+    // Read a page from disk
+    std::unique_ptr<SlottedPage> load(TableID table_id, PageID page_id) {
+        check_and_load_stream(table_id);
+        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
+        file_stream->seekg(page_id * PAGE_SIZE, std::ios::beg);
+        auto page = std::make_unique<SlottedPage>();
+        // Read the content of the file into the page
+        if(file_stream->read(page->page_data.get(), PAGE_SIZE)) {
+            //std::cout << "Page read successfully from file." << std::endl;
+        } else {
+            std::cerr << "Error: Unable to read data from the file :: Table ID: " << table_id << ". \n";
+            exit(-1);
+        }
+        return page;
+    }
+
+    // Write a page to disk
+    void flush(TableID table_id, PageID page_id, const std::unique_ptr<SlottedPage>& page) {
+        check_and_load_stream(table_id);
+        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
+        size_t page_offset = page_id * PAGE_SIZE;        
+
+        // Move the write pointer
+        file_stream->seekp(page_offset, std::ios::beg);
+        file_stream->write(page->page_data.get(), PAGE_SIZE);        
+        file_stream->flush();
+    }
+
+    // Extend database file by one page
+    void extend(TableID table_id) {
+        std::cout << "Extending database file :: Table ID: " << table_id << "\n";
+        check_and_load_stream(table_id);
+        std::unique_ptr<std::fstream>& file_stream = file_stream_map[table_id];
+
+        // Create a slotted page
+        auto empty_slotted_page = std::make_unique<SlottedPage>();
+
+        // Move the write pointer
+        file_stream->seekp(0, std::ios::end);
+
+        // Write the page to the file, extending it
+        file_stream->write(empty_slotted_page->page_data.get(), PAGE_SIZE);
+        file_stream->flush();
+
+        // Update number of pages
+        num_pages_map[table_id] += 1;
+    }
+
+    size_t get_num_pages(TableID table_id) {
+        check_and_load_stream(table_id);
+        return num_pages_map[table_id];
     }
 
 };
 
-constexpr size_t MAX_PAGES_IN_MEMORY = 10;
+struct TablePageIDs {
+    TableID table_id;
+    PageID page_id;
 
+    TablePageIDs(TableID table_id, PageID page_id): table_id(table_id), page_id(page_id) {};
+    bool operator==(const TablePageIDs& other) const {
+        return table_id == other.table_id && page_id == other.page_id;
+    }
+};
+namespace std {
+    template <>
+    struct hash<TablePageIDs> {
+        std::size_t operator()(const TablePageIDs& tp_ids) const {
+            std::size_t seed = 0;
+            std::hash<size_t> hasher;
+            seed ^= hasher(tp_ids.table_id) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+            seed ^= hasher(tp_ids.page_id) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+            return seed;
+        }
+    };
+}
+
+constexpr size_t MAX_PAGES_IN_MEMORY = 10;
 class BufferManager {
 private:
-    using PageMap = std::unordered_map<PageID, std::unique_ptr<SlottedPage>>;
 
+    using PageMap = std::unordered_map<TablePageIDs, std::unique_ptr<SlottedPage>>;
     StorageManager storage_manager;
     PageMap pageMap;
-    std::unique_ptr<Policy> policy;
+    std::unique_ptr<Policy<TablePageIDs>> policy;
 
 public:
     BufferManager(): 
-    policy(std::make_unique<LruPolicy>(MAX_PAGES_IN_MEMORY)) {}
+    policy(std::make_unique<LruPolicy<TablePageIDs>>(MAX_PAGES_IN_MEMORY, TablePageIDs(INVALID_VALUE, INVALID_VALUE))) {}
 
-    std::unique_ptr<SlottedPage>& getPage(int page_id) {
-        auto it = pageMap.find(page_id);
+    std::unique_ptr<SlottedPage>& getPage(TableID table_id, PageID page_id) {
+        TablePageIDs tp_ids(table_id, page_id);
+
+        auto it = pageMap.find(tp_ids);
         if (it != pageMap.end()) {
-            policy->touch(page_id);
-            return pageMap.find(page_id)->second;
+            policy->touch(tp_ids);
+            return pageMap.find(tp_ids)->second;
         }
 
         if (pageMap.size() >= MAX_PAGES_IN_MEMORY) {
-            auto evictedPageId = policy->evict();
-            if(evictedPageId != INVALID_VALUE){
-                std::cout << "Evicting page " << evictedPageId << "\n";
-                storage_manager.flush(evictedPageId, 
-                                      pageMap[evictedPageId]);
-                pageMap[evictedPageId].reset();
-                pageMap.erase(evictedPageId);
+            auto evicted_tp_ids = policy->evict();
+            if(evicted_tp_ids.table_id != INVALID_VALUE){
+                std::cout << "Evicting Table ID: " << evicted_tp_ids.table_id << " :: Page ID: " << evicted_tp_ids.page_id << "\n";
+                storage_manager.flush(evicted_tp_ids.table_id, evicted_tp_ids.page_id, pageMap[evicted_tp_ids]);
+                pageMap[evicted_tp_ids].reset();
+                pageMap.erase(evicted_tp_ids);
             }
         }
 
-        auto page = storage_manager.load(page_id);
-        policy->touch(page_id);
-        std::cout << "Loading page: " << page_id << "\n";
-        pageMap[page_id] = std::move(page);
-        return pageMap[page_id];
+        auto page = storage_manager.load(table_id, page_id);
+        policy->touch(tp_ids);
+        std::cout << "Loading Table ID: " << table_id << " :: Page ID: " << page_id <<  "\n";
+        pageMap[tp_ids] = std::move(page);
+        return pageMap[tp_ids];
     }
 
-    void flushPage(int page_id) {
+    void flushPage(TableID table_id, PageID page_id) {
         //std::cout << "Flush page " << page_id << "\n";
-        storage_manager.flush(page_id, pageMap[page_id]);
+        storage_manager.flush(table_id, page_id, pageMap[TablePageIDs(table_id, page_id)]);
     }
 
-    void extend(){
-        storage_manager.extend();
+    void extend(TableID table_id) {
+        storage_manager.extend(table_id);
     }
     
-    size_t getNumPages(){
-        return storage_manager.num_pages;
+    size_t getNumPages(TableID table_id) {
+        return storage_manager.get_num_pages(table_id);
     }
 
+    std::unique_ptr<SlottedPage>& getPage(PageID page_id) {
+        return getPage(0, page_id);
+    }
+    void flushPage(PageID page_id) {
+        flushPage(0, page_id);
+    }
+    void extend() {
+        extend(0);
+    }
+    size_t getNumPages() {
+        return getNumPages(0);
+    }
 };
 
 class HashIndex {
