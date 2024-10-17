@@ -236,8 +236,7 @@ public:
         size_t slot_itr = 0;
         Slot* slot_array = reinterpret_cast<Slot*>(page_data.get());        
         for (; slot_itr < MAX_SLOTS; slot_itr++) {
-            if (slot_array[slot_itr].empty == true and 
-                slot_array[slot_itr].length >= tuple_size) {
+            if (slot_array[slot_itr].empty && slot_array[slot_itr].length >= tuple_size) {
                 break;
             }
         }
@@ -288,15 +287,33 @@ public:
         return true;
     }
 
-    void deleteTuple(size_t index) {
+    bool updateTuple(size_t index, std::unique_ptr<Tuple> tuple) {
+        assert(index < MAX_SLOTS);
         Slot* slot_array = reinterpret_cast<Slot*>(page_data.get());
-        size_t slot_itr = 0;
-        for (; slot_itr < MAX_SLOTS; slot_itr++) {
-            if(slot_itr == index and
-               slot_array[slot_itr].empty == false){
-                slot_array[slot_itr].empty = true;
-                break;
-               }
+
+        auto serialized_tuple = tuple->serialize();
+        auto tuple_size = serialized_tuple.length();
+        if (!slot_array[index].empty && tuple_size <= slot_array[index].length) {
+            // Copy serialized data into the page
+            std::memcpy(page_data.get() + slot_array[index].offset, 
+                    serialized_tuple.c_str(), 
+                    tuple_size);
+            return true;
+        }
+
+        bool add_tuple_res = addTuple(std::move(tuple));
+        if (add_tuple_res) {
+            deleteTuple(index);
+        }
+        return add_tuple_res;
+    }
+
+    void deleteTuple(size_t index) {
+        assert(index < MAX_SLOTS);
+        Slot* slot_array = reinterpret_cast<Slot*>(page_data.get());
+
+        if (!slot_array[index].empty){
+            slot_array[index].empty = true;
         }
 
         //std::this_thread::sleep_for(std::chrono::milliseconds(100));
