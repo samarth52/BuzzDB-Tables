@@ -1527,8 +1527,9 @@ public:
     }
 
     void add_column(std::unique_ptr<TableColumn> column) {
+        std::string column_name = column->name;
         columns.push_back(std::move(column));
-        columns_map[column->name] = std::prev(columns.end());
+        columns_map[column_name] = std::prev(columns.end());
     }
 
     std::pair<ColumnID, bool> find_column_idx(std::string name) {
@@ -1657,7 +1658,13 @@ public:
                 tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx").first]->asInt(),
                 FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type").first]->asInt())
             );
+            std::cout << "here10: ";
+            std::cout << column->idx << " ";
+            std::cout << column->type << " ";
+            std::cout << column->name << std::endl;
+
             table_schema->add_column(std::move(column));
+            std::cout << "here20" << std::endl;
         }
 
         return table_schema;
