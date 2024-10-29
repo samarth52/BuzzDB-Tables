@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <fstream>
@@ -1506,6 +1507,16 @@ public:
 using TableColumns = std::list<std::unique_ptr<TableColumn>>;
 
 class TableSchema {
+private:
+    void init() {
+        this->columns.sort([&](const std::unique_ptr<TableColumn>& column1, const std::unique_ptr<TableColumn>& column2) {
+            return column1->idx < column2->idx;
+        });
+        for (auto it = this->columns.begin(); it != this->columns.end(); it++) {
+            columns_map[it->get()->name] = it;
+        }
+    }
+
 public:
     std::string name;
     TableID id;
@@ -1517,37 +1528,19 @@ public:
     TableSchema(std::string name): name(name), id(std::numeric_limits<TableID>::max()) {}
     TableSchema(std::string name, TableID id): name(name), id(id) {}
     TableSchema(std::string name, TableColumns columns): name(name), id(std::numeric_limits<TableID>::max()), columns(std::move(columns)) {
-        for (auto it = this->columns.begin(); it != this->columns.end(); it++) {
-            columns_map[it->get()->name] = it;
-        }
+        init();
     }
     TableSchema(std::string name, TableID id, TableColumns columns): name(name), id(id), columns(std::move(columns)) {
-        for (auto it = this->columns.begin(); it != this->columns.end(); it++) {
-            columns_map[it->get()->name] = it;
-        }
-        
-        // std::cout << "columns map creation done" << std::endl;
-        // for (auto it = columns_map.begin(); it != columns_map.end(); it++) {
-        //     std::cout << it->first << " " << it->second->get()->idx << std::endl;
-        // }
+        init();
     }
 
     void add_column(std::unique_ptr<TableColumn> column) {
         std::string column_name = column->name;
-        columns.push_back(std::move(column));
-        auto& added_column = columns.back();
-        columns_map[column_name] = std::prev(columns.end());
-
-        // std::cout << "printing columns:" << std::endl;
-        // for (auto it = columns.begin(); it != columns.end(); it++) {
-        //     std::cout << **it << std::endl;
-        // }
-
-        // std::cout << "printing columns map:" << std::endl;
-        // for (auto it = columns_map.begin(); it != columns_map.end(); it++) {
-        //     std::cout << it->first << " " << it->second->get()->idx << std::endl;
-        // }
-        // std::cout << "done printing" << std::endl;
+        auto it = std::upper_bound(columns.begin(), columns.end(), column->idx, [&](ColumnID idx, const std::unique_ptr<TableColumn>& c) {
+            return idx < c->idx;
+        });
+        auto new_it = columns.insert(it, std::move(column));
+        columns_map[column_name] = new_it;
     }
 
     ColumnID find_column_idx(std::string name) {
@@ -1630,8 +1623,8 @@ public:
             schema_policy(std::make_unique<LruPolicy<TableID>>(MAX_SCHEMAS_IN_MEMORY, INVALID_VALUE)),
             name_policy(std::make_unique<LruPolicy<std::string>>(MAX_NAMES_IN_MEMORY, ""))
     {
-        // schema_map[SYSTEM_CLASS_TABLE_ID] = SYSTEM_CLASS_SCHEMA;
-        // schema_map[SYSTEM_COLUMN_TABLE_ID] = SYSTEM_COLUMN_SCHEMA;
+        schema_map[SYSTEM_CLASS_TABLE_ID] = SYSTEM_CLASS_SCHEMA;
+        schema_map[SYSTEM_COLUMN_TABLE_ID] = SYSTEM_COLUMN_SCHEMA;
 
         // If the system tables do not exist, run the bootstrap process
         if (!buffer_manager.fileExists(SYSTEM_NEXT_TABLE_ID)) {
@@ -1654,6 +1647,7 @@ public:
 
     TableID get_table_id(std::string name) {
         if (name_map.find(name) != name_map.end()) {
+            std::cout << "Fetched table id from cache: id=" << name_map[name] << " :: name=" << name << std::endl;
             name_policy->touch(name);
             return name_map[name];
         }
@@ -1672,22 +1666,23 @@ public:
             if (name_map.size() >= MAX_NAMES_IN_MEMORY) {
                 auto evicted_name = name_policy->evict();
                 if (evicted_name != "") {
-                    std::cout << "Evicting Table Name: " << evicted_name << "\n";
+                    std::cout << "Evicted table id from cache: id=" << name_map[evicted_name] << " :: name=" << evicted_name << std::endl;
                     name_map.erase(evicted_name);
                 }
             }
             name_policy->touch(name);
             name_map[name] = table_id;
+            std::cout << "Fetched table id from disk: id=" << name_map[name] << " :: name=" << name << std::endl;
             return table_id;
         }
 
-        std::cerr << "Table name=" << name << " does not exist." << std::endl;
         return std::numeric_limits<TableID>::max();
     }
 
     std::shared_ptr<TableSchema> get_table_schema(std::string name) {
         TableID table_id;
         if ((table_id = get_table_id(name)) == std::numeric_limits<TableID>::max()) {
+            std::cerr << "Failed to fetch table schema from disk: name=" << name << " :: Table does not exist." << std::endl;
             return nullptr;
         }
         return get_table_schema(table_id);
@@ -1695,6 +1690,7 @@ public:
 
     std::shared_ptr<TableSchema> get_table_schema(TableID table_id) {
         if (schema_map.find(table_id) != schema_map.end()) {
+            std::cout << "Fetched table schema from cache: id=" << table_id << std::endl;
             auto table_schema = schema_map[table_id];
             if (table_id >= NUM_SYSTEM_TABLES) {
                 schema_policy->touch(table_id);
@@ -1720,7 +1716,7 @@ public:
         }
 
         if (table_schema == nullptr) {
-            std::cerr << "Table id=" << table_id << " does not exist." << std::endl;
+            std::cerr << "Failed to fetch table schema from disk: id=" << table_id << " :: Table does not exist." << std::endl;
             return nullptr;
         }
 
@@ -1735,39 +1731,25 @@ public:
             SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
             while (select_op.next()) {
                 auto tuple = select_op.getOutput();
-                // for (auto& field : tuple) {
-                //     field->print();
-                //     std::cout << " ";
-                // }
-                // std::cout << "\n";
-
-                // std::cout << "setting up column" << std::endl;
                 std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
                     tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("name")]->asString(),
                     tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx")]->asInt(),
                     FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type")]->asInt())
                 );
-                // std::cout << "here10: ";
-                // std::cout << column->idx << " ";
-                // std::cout << column->type << " ";
-                // std::cout << column->name << std::endl;
-
-                // std::cout << "adding column" << std::endl;
                 table_schema->add_column(std::move(column));
-                // std::cout << "done adding column" << std::endl;
-                // std::cout << "here20" << std::endl;
             }
         }
 
         if (schema_map.size() >= MAX_SCHEMAS_IN_MEMORY) {
             TableID evicted_table_id = schema_policy->evict();
             if (evicted_table_id != INVALID_VALUE) {
-                std::cout << "Evicting Table Schema: " << evicted_table_id << "\n";
+                std::cout << "Evicted table id from cache: id=" << evicted_table_id << std::endl;
                 schema_map.erase(evicted_table_id);
             }
         }
         schema_map[table_id] = table_schema;
         schema_policy->touch(table_id);
+        std::cout << "Fetched table schema from disk: id=" << table_id << std::endl;
         return table_schema;
     }
 
@@ -1795,9 +1777,6 @@ public:
         std::unique_ptr<Tuple> system_class_tuple = std::make_unique<Tuple>();
         system_class_tuple->addField(std::make_unique<Field>(table_id));
         system_class_tuple->addField(std::make_unique<Field>(table_schema->name));
-        // std::cout << "System class tuple inserting: " << std::endl;
-        // system_class_tuple->print();
-        
         insert_system_class_op.setTupleToInsert(std::move(system_class_tuple));
         bool insert_system_class_res = insert_system_class_op.next();
         assert(insert_system_class_res == true);
@@ -1810,9 +1789,6 @@ public:
             system_column_tuple->addField(std::make_unique<Field>(column->name));
             system_column_tuple->addField(std::make_unique<Field>(column->idx));
             system_column_tuple->addField(std::make_unique<Field>(column->type));
-            // std::cout << "System column tuple inserting: " << std::endl;
-            // system_column_tuple->print();
-
             insert_system_column_op.setTupleToInsert(std::move(system_column_tuple));
             bool insert_system_column_res = insert_system_column_op.next();
             assert(insert_system_column_res == true);
@@ -1899,9 +1875,6 @@ int main() {
         return 1;
     }
 
-    // std::cout << *SYSTEM_CLASS_SCHEMA << std::endl;
-    // std::cout << *SYSTEM_COLUMN_SCHEMA << std::endl;
-
     TableManager table_manager(db.buffer_manager);
     auto schema1 = table_manager.get_table_schema(SYSTEM_CLASS_TABLE_ID);
     auto schema2 = table_manager.get_table_schema("system_column");
@@ -1920,10 +1893,12 @@ int main() {
     // std::cout << *new_schema << std::endl;
 
     auto schema3 = table_manager.get_table_schema("test_table");
+    auto schema4 = table_manager.get_table_schema("test_table");
     // std::cout << "here5: " << /new_schema->find_column_idx("hello") << std::endl;
     // std::cout << "here6: " << schema3->find_column_idx("hello") << std::endl;
 
     std::cout << *schema3 << std::endl;
+    std::cout << *schema4 << std::endl;
 
     int field1, field2;
     int i = 0;
