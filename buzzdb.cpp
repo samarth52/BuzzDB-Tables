@@ -241,7 +241,7 @@ public:
             }
         }
         if (slot_itr == MAX_SLOTS){
-            //std::cout << "Page does not contain an empty slot with sufficient space to store the tuple.";
+            std::cout << "Page does not contain an empty slot with sufficient space to store the tuple.";
             return false;
         }
 
@@ -424,7 +424,6 @@ private:
     }
 
     std::fstream& open_stream(TableID table_id) {
-        // std::unique_ptr<std::fstream> file_stream = std::make_unique<std::fstream>();
         std::fstream file_stream;
         std::string database_filename = get_database_filename(table_id);
         file_stream.open(database_filename, std::ios::in | std::ios::out);
@@ -488,6 +487,15 @@ public:
         num_pages_map.clear();
     }
 
+    bool file_exists(TableID table_id) {
+        std::string database_filename = get_database_filename(table_id);
+        std::fstream file_stream(database_filename);
+
+        bool res = file_stream.good();
+        file_stream.close();
+        return res;
+    }
+
     // Read a page from disk
     std::unique_ptr<SlottedPage> load(TableID table_id, PageID page_id) {
         std::fstream& file_stream = check_and_load_stream(table_id);
@@ -521,7 +529,6 @@ public:
 
         // Create a slotted page
         auto empty_slotted_page = std::make_unique<SlottedPage>();
-        std::memset(empty_slotted_page->page_data.get(), 0, PAGE_SIZE);
 
         // Move the write pointer
         file_stream.seekp(0, std::ios::end);
@@ -575,6 +582,10 @@ private:
 public:
     BufferManager(): 
     policy(std::make_unique<LruPolicy<TablePageIDs>>(MAX_PAGES_IN_MEMORY, TablePageIDs(INVALID_VALUE, INVALID_VALUE))) {}
+
+    bool fileExists(TableID table_id) {
+        return storage_manager.file_exists(table_id);
+    }
 
     std::unique_ptr<SlottedPage>& getPage(TableID table_id, PageID page_id) {
         TablePageIDs tp_ids(table_id, page_id);
@@ -1485,7 +1496,12 @@ public:
     ColumnID idx;
     FieldType type;
 
+public:
     TableColumn(std::string name, ColumnID idx, FieldType type) : name(name), idx(idx), type(type) {}
+
+    friend std::ostream& operator<<(std::ostream& os, TableColumn const& column) {
+        return os << "Column idx=" << column.idx << " :: name=" << column.name << " :: type=" << column.type;
+    }
 };
 using TableColumns = std::vector<std::unique_ptr<TableColumn>>;
 
@@ -1495,15 +1511,48 @@ public:
     TableID id;
     TableColumns columns;
 
-    TableSchema(std::string name, TableID id, TableColumns columns): name(name), id(id), columns(std::move(columns)) {}
+    std::unordered_map<std::string, TableColumns::iterator> columns_map;
+
+public:
     TableSchema(std::string name, TableID id): name(name), id(id) {}
+    TableSchema(std::string name, TableID id, TableColumns columns): name(name), id(id), columns(std::move(columns)) {
+        for (auto it = this->columns.begin(); it != this->columns.end(); it++) {
+            columns_map[it->get()->name] = it;
+        }
+        
+        std::cout << "columns map creation done" << std::endl;
+        for (auto it = columns_map.begin(); it != columns_map.end(); it++) {
+            std::cout << it->first << " " << it->second->get()->idx << std::endl;
+        }
+    }
 
     void add_column(std::unique_ptr<TableColumn> column) {
         columns.push_back(std::move(column));
+        columns_map[column->name] = std::prev(columns.end());
+    }
+
+    std::pair<ColumnID, bool> find_column_idx(std::string name) {
+        if (columns_map.find(name) == columns_map.end()) {
+            return std::pair<ColumnID, bool>(std::numeric_limits<ColumnID>::max(), false);
+        }
+        return std::pair<ColumnID, bool>(columns_map[name]->get()->idx, true);
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, TableSchema const& table) {
+        os << "Table id=" << table.id << " :: name=" << table.name << std::endl;
+        os << "Columns:" << std::endl;
+        for (auto& column : table.columns) {
+            os << *column << std::endl;
+        }
+        return os;
     }
 };
 
-static const std::shared_ptr<const TableSchema> SYSTEM_CLASS_SCHEMA = std::make_shared<const TableSchema>("system_class", 1,
+static const TableID SYSTEM_NEXT_TABLE_ID = 0;
+static const TableID SYSTEM_CLASS_TABLE_ID = 1;
+static const TableID SYSTEM_COLUMN_TABLE_ID = 2;
+
+static const std::shared_ptr<TableSchema> SYSTEM_CLASS_SCHEMA = std::make_shared<TableSchema>("system_class", SYSTEM_CLASS_TABLE_ID,
     ([]{
         TableColumns columns;
         columns.push_back(std::make_unique<TableColumn>("id", 0, FieldType::INT));
@@ -1511,8 +1560,7 @@ static const std::shared_ptr<const TableSchema> SYSTEM_CLASS_SCHEMA = std::make_
         return columns;
     })()
 );
-
-static const std::shared_ptr<const TableSchema> SYSTEM_COLUMN_SCHEMA = std::make_shared<const TableSchema>("system_column", 2,
+static const std::shared_ptr<TableSchema> SYSTEM_COLUMN_SCHEMA = std::make_shared<TableSchema>("system_column", SYSTEM_COLUMN_TABLE_ID,
     ([]{
         TableColumns columns;
         columns.push_back(std::make_unique<TableColumn>("table_id", 0, FieldType::INT));
@@ -1527,17 +1575,43 @@ class TableManager {
 private:
     TableID next_table_id;
     std::unique_ptr<LruPolicy<TableID>> schema_policy;
-    std::unordered_map<TableID, std::shared_ptr<const TableSchema>> schema_map;
+    std::unordered_map<TableID, std::shared_ptr<TableSchema>> schema_map;
     BufferManager& buffer_manager;
 
     static const TableID NUM_SYSTEM_TABLES = 3;
 
+    void bootstrap_system_tables() {
+        bootstrap_system_next_table_id();
+        bootstrap_system_class_table();
+        bootstrap_system_column_table();
+    }
+
+    void bootstrap_system_next_table_id() {
+        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
+        memset(next_table_id_page->page_data.get(), 0, PAGE_SIZE);
+        next_table_id = 1;
+    }
+
+    void bootstrap_system_class_table() {
+        create_table(SYSTEM_CLASS_SCHEMA, true);
+    }
+
+    void bootstrap_system_column_table() {
+        create_table(SYSTEM_COLUMN_SCHEMA, true);
+    }
+
 public:
     TableManager(BufferManager& buffer_manager): buffer_manager(buffer_manager) {
-        schema_map[1] = SYSTEM_CLASS_SCHEMA;
-        schema_map[2] = SYSTEM_COLUMN_SCHEMA;
+        // schema_map[SYSTEM_CLASS_TABLE_ID] = SYSTEM_CLASS_SCHEMA;
+        // schema_map[SYSTEM_COLUMN_TABLE_ID] = SYSTEM_COLUMN_SCHEMA;
 
-        auto& next_table_id_page = buffer_manager.getPage(0, 0);
+        // If the system tables do not exist, run the bootstrap process
+        if (!buffer_manager.fileExists(SYSTEM_NEXT_TABLE_ID)) {
+            bootstrap_system_tables();
+            return;
+        }
+
+        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
         TableID potential_next_table_id = *reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
         next_table_id = potential_next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : potential_next_table_id;
     }
@@ -1545,12 +1619,12 @@ public:
     ~TableManager() {
         schema_map.clear();
 
-        auto& next_table_id_page = buffer_manager.getPage(0, 0);
+        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
         TableID* next_table_id_ptr = reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
         *next_table_id_ptr = next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : next_table_id;
     }
 
-    std::shared_ptr<const TableSchema> get_table_schema(TableID table_id) {
+    std::shared_ptr<TableSchema> get_table_schema(TableID table_id, std::string name) {
         if (schema_map.find(table_id) != schema_map.end()) {
             auto table_schema = schema_map[table_id];
             if (table_id >= NUM_SYSTEM_TABLES) {
@@ -1559,7 +1633,84 @@ public:
             return table_schema;
         }
 
-        return nullptr;
+        std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
+        std::cout << "here2: " << SYSTEM_COLUMN_SCHEMA->find_column_idx("table_id").first << std::endl;
+        std::cout << "here3: " << SYSTEM_COLUMN_SCHEMA->find_column_idx("table_id").second << std::endl;
+
+        auto table_id_equality_predicate = std::make_unique<SimplePredicate>(
+            SimplePredicate::Operand(SYSTEM_COLUMN_SCHEMA->find_column_idx("table_id").first),
+            SimplePredicate::Operand(std::make_unique<Field>(table_id)),
+            SimplePredicate::ComparisonOperator::EQ
+        );
+        ScanOperator scan_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
+        SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
+        while (select_op.next()) {
+            auto tuple = select_op.getOutput();
+            for (auto& field : tuple) {
+                field->print();
+                std::cout << " ";
+            }
+            std::cout << "\n";
+
+            std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
+                tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("name").first]->asString(),
+                tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx").first]->asInt(),
+                FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type").first]->asInt())
+            );
+            table_schema->add_column(std::move(column));
+        }
+
+        return table_schema;
+    }
+
+    bool create_table(std::shared_ptr<TableSchema> table_schema, bool is_bootstrap) {
+        if (!is_bootstrap) {
+            // Check if table exists
+            auto table_name_equality_predicate = std::make_unique<SimplePredicate>(
+                SimplePredicate::Operand(SYSTEM_CLASS_SCHEMA->find_column_idx("name").first),
+                SimplePredicate::Operand(std::make_unique<Field>(table_schema->name)),
+                SimplePredicate::ComparisonOperator::EQ
+            );
+
+            ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+            SelectOperator select_op(scan_op, std::move(table_name_equality_predicate));
+            while (select_op.next()) {
+                std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
+                return false;
+            }
+        }
+
+        TableID table_id = next_table_id++;
+
+        // Insert table id and name in system_class
+        InsertOperator insert_system_class_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+        std::unique_ptr<Tuple> system_class_tuple = std::make_unique<Tuple>();
+        system_class_tuple->addField(std::make_unique<Field>(table_id));
+        system_class_tuple->addField(std::make_unique<Field>(table_schema->name));
+        std::cout << "System class tuple inserting: " << std::endl;
+        system_class_tuple->print();
+        
+        insert_system_class_op.setTupleToInsert(std::move(system_class_tuple));
+        bool insert_system_class_res = insert_system_class_op.next();
+        assert(insert_system_class_res == true);
+
+        // Insert table columns in system_column
+        InsertOperator insert_system_column_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
+        for (auto& column : table_schema->columns) {
+            std::unique_ptr<Tuple> system_column_tuple = std::make_unique<Tuple>();
+            system_column_tuple->addField(std::make_unique<Field>(table_id));
+            system_column_tuple->addField(std::make_unique<Field>(column->name));
+            system_column_tuple->addField(std::make_unique<Field>(column->idx));
+            system_column_tuple->addField(std::make_unique<Field>(column->type));
+            std::cout << "System column tuple inserting: " << std::endl;
+            system_column_tuple->print();
+
+            insert_system_column_op.setTupleToInsert(std::move(system_column_tuple));
+            bool insert_system_column_res = insert_system_column_op.next();
+            assert(insert_system_column_res == true);
+        }
+
+        return true;
     }
 };
 
@@ -1638,6 +1789,15 @@ int main() {
         std::cerr << "Unable to open file" << std::endl;
         return 1;
     }
+
+    std::cout << *SYSTEM_CLASS_SCHEMA << std::endl;
+    std::cout << *SYSTEM_COLUMN_SCHEMA << std::endl;
+
+    TableManager table_manager(db.buffer_manager);
+    auto schema1 = table_manager.get_table_schema(SYSTEM_CLASS_TABLE_ID, "system_class");
+    auto schema2 = table_manager.get_table_schema(SYSTEM_COLUMN_TABLE_ID, "system_column");
+    std::cout << *schema1 << std::endl;
+    std::cout << *schema2 << std::endl;
 
     int field1, field2;
     int i = 0;
