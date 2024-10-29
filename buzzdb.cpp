@@ -408,7 +408,7 @@ public:
     }
 };
 
-using TableID = size_t;
+using TableID = uint16_t;
 using PageID = uint16_t;
 constexpr size_t MAX_FILE_STREAMS_IN_MEMORY = 10;
 
@@ -423,7 +423,7 @@ private:
         return "database_files/" + std::to_string(table_id) + ".dat";
     }
 
-    void open_stream(TableID table_id) {
+    std::fstream& open_stream(TableID table_id) {
         // std::unique_ptr<std::fstream> file_stream = std::make_unique<std::fstream>();
         std::fstream file_stream;
         std::string database_filename = get_database_filename(table_id);
@@ -445,6 +445,7 @@ private:
         if(num_pages == 0){
             extend(table_id);
         }
+        return file_stream_map[table_id];
     }
 
     void close_stream(TableID table_id) {
@@ -459,7 +460,7 @@ private:
         }
     }
 
-    void check_and_load_stream(TableID table_id) {
+    std::fstream& check_and_load_stream(TableID table_id) {
         if (file_stream_map.find(table_id) == file_stream_map.end()) {
             if (file_stream_map.size() >= MAX_FILE_STREAMS_IN_MEMORY) {
                 TableID evicted_table_id = policy->evict();
@@ -470,6 +471,7 @@ private:
             open_stream(table_id);
         }
         policy->touch(table_id);
+        return file_stream_map[table_id];
     }
 
 public:
@@ -488,8 +490,7 @@ public:
 
     // Read a page from disk
     std::unique_ptr<SlottedPage> load(TableID table_id, PageID page_id) {
-        check_and_load_stream(table_id);
-        std::fstream& file_stream = file_stream_map[table_id];
+        std::fstream& file_stream = check_and_load_stream(table_id);
         file_stream.seekg(page_id * PAGE_SIZE, std::ios::beg);
         auto page = std::make_unique<SlottedPage>();
         // Read the content of the file into the page
@@ -504,8 +505,7 @@ public:
 
     // Write a page to disk
     void flush(TableID table_id, PageID page_id, const std::unique_ptr<SlottedPage>& page) {
-        check_and_load_stream(table_id);
-        std::fstream& file_stream = file_stream_map[table_id];
+        std::fstream& file_stream = check_and_load_stream(table_id);
         size_t page_offset = page_id * PAGE_SIZE;        
 
         // Move the write pointer
@@ -517,11 +517,11 @@ public:
     // Extend database file by one page
     void extend(TableID table_id) {
         std::cout << "Extending database file :: Table ID: " << table_id << "\n";
-        check_and_load_stream(table_id);
-        std::fstream& file_stream = file_stream_map[table_id];
+        std::fstream& file_stream = check_and_load_stream(table_id);
 
         // Create a slotted page
         auto empty_slotted_page = std::make_unique<SlottedPage>();
+        std::memset(empty_slotted_page->page_data.get(), 0, PAGE_SIZE);
 
         // Move the write pointer
         file_stream.seekp(0, std::ios::end);
@@ -1471,6 +1471,91 @@ public:
 
     std::vector<std::unique_ptr<Field>> getOutput() override {
         return {}; // Return empty vector
+    }
+};
+
+using ColumnID = uint16_t;
+class TableColumn {
+public:
+    std::string name;
+    ColumnID idx;
+    FieldType type;
+
+    TableColumn(std::string name, ColumnID idx, FieldType type) : name(name), idx(idx), type(type) {}
+};
+using TableColumns = std::vector<std::unique_ptr<TableColumn>>;
+
+class TableSchema {
+public:
+    std::string name;
+    TableID id;
+    TableColumns columns;
+
+    TableSchema(std::string name, TableID id, TableColumns columns): name(name), id(id), columns(std::move(columns)) {}
+    TableSchema(std::string name, TableID id): name(name), id(id) {}
+
+    void add_column(std::unique_ptr<TableColumn> column) {
+        columns.push_back(std::move(column));
+    }
+};
+
+static const std::shared_ptr<const TableSchema> SYSTEM_CLASS_SCHEMA = std::make_shared<const TableSchema>("system_class", 1,
+    ([]{
+        TableColumns columns;
+        columns.push_back(std::make_unique<TableColumn>("id", 0, FieldType::INT));
+        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
+        return columns;
+    })()
+);
+
+static const std::shared_ptr<const TableSchema> SYSTEM_COLUMN_SCHEMA = std::make_shared<const TableSchema>("system_column", 2,
+    ([]{
+        TableColumns columns;
+        columns.push_back(std::make_unique<TableColumn>("table_id", 0, FieldType::INT));
+        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
+        columns.push_back(std::make_unique<TableColumn>("idx", 2, FieldType::INT));
+        columns.push_back(std::make_unique<TableColumn>("data_type", 3, FieldType::INT));
+        return columns;
+    })()
+);
+
+class TableManager {
+private:
+    TableID next_table_id;
+    std::unique_ptr<LruPolicy<TableID>> schema_policy;
+    std::unordered_map<TableID, std::shared_ptr<const TableSchema>> schema_map;
+    BufferManager& buffer_manager;
+
+    static const TableID NUM_SYSTEM_TABLES = 3;
+
+public:
+    TableManager(BufferManager& buffer_manager): buffer_manager(buffer_manager) {
+        schema_map[1] = SYSTEM_CLASS_SCHEMA;
+        schema_map[2] = SYSTEM_COLUMN_SCHEMA;
+
+        auto& next_table_id_page = buffer_manager.getPage(0, 0);
+        TableID potential_next_table_id = *reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
+        next_table_id = potential_next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : potential_next_table_id;
+    }
+
+    ~TableManager() {
+        schema_map.clear();
+
+        auto& next_table_id_page = buffer_manager.getPage(0, 0);
+        TableID* next_table_id_ptr = reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
+        *next_table_id_ptr = next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : next_table_id;
+    }
+
+    std::shared_ptr<const TableSchema> get_table_schema(TableID table_id) {
+        if (schema_map.find(table_id) != schema_map.end()) {
+            auto table_schema = schema_map[table_id];
+            if (table_id >= NUM_SYSTEM_TABLES) {
+                schema_policy->touch(table_id);
+            }
+            return table_schema;
+        }
+
+        return nullptr;
     }
 };
 
