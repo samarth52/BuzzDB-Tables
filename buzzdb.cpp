@@ -615,18 +615,18 @@ public:
         return storage_manager.get_num_pages(table_id);
     }
 
-    std::unique_ptr<SlottedPage>& getPage(PageID page_id) {
-        return getPage(0, page_id);
-    }
-    void flushPage(PageID page_id) {
-        flushPage(0, page_id);
-    }
-    void extend() {
-        extend(0);
-    }
-    size_t getNumPages() {
-        return getNumPages(0);
-    }
+    // std::unique_ptr<SlottedPage>& getPage(PageID page_id) {
+    //     return getPage(0, page_id);
+    // }
+    // void flushPage(PageID page_id) {
+    //     flushPage(0, page_id);
+    // }
+    // void extend() {
+    //     extend(0);
+    // }
+    // size_t getNumPages() {
+    //     return getNumPages(0);
+    // }
 };
 
 class HashIndex {
@@ -774,13 +774,14 @@ class BinaryOperator : public Operator {
 class ScanOperator : public Operator {
 private:
     BufferManager& bufferManager;
+    TableID table_id;
     size_t currentPageIndex = 0;
     size_t currentSlotIndex = 0;
     std::unique_ptr<Tuple> currentTuple;
     size_t tuple_count = 0;
 
 public:
-    ScanOperator(BufferManager& manager) : bufferManager(manager) {}
+    ScanOperator(BufferManager& manager, TableID table_id) : bufferManager(manager), table_id(table_id) {}
 
     void open() override {
         currentPageIndex = 0;
@@ -814,8 +815,8 @@ public:
 
 private:
     void loadNextTuple() {
-        while (currentPageIndex < bufferManager.getNumPages()) {
-            auto& currentPage = bufferManager.getPage(currentPageIndex);
+        while (currentPageIndex < bufferManager.getNumPages(table_id)) {
+            auto& currentPage = bufferManager.getPage(table_id, currentPageIndex);
             if (!currentPage || currentSlotIndex >= MAX_SLOTS) {
                 currentSlotIndex = 0; // Reset slot index when moving to a new page
             }
@@ -1240,6 +1241,7 @@ private:
 
 struct QueryComponents {
     std::vector<int> selectAttributes;
+    TableID table_id = 10;
     bool sumOperation = false;
     int sumAttributeIndex = -1;
     bool groupBy = false;
@@ -1326,7 +1328,7 @@ void prettyPrint(const QueryComponents& components) {
 void executeQuery(const QueryComponents& components, 
                   BufferManager& buffer_manager) {
     // Stack allocation of ScanOperator
-    ScanOperator scanOp(buffer_manager);
+    ScanOperator scanOp(buffer_manager, components.table_id);
 
     // Using a pointer to Operator to handle polymorphism
     Operator* rootOp = &scanOp;
@@ -1392,10 +1394,11 @@ void executeQuery(const QueryComponents& components,
 class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
+    TableID table_id;
     std::unique_ptr<Tuple> tupleToInsert;
 
 public:
-    InsertOperator(BufferManager& manager) : bufferManager(manager) {}
+    InsertOperator(BufferManager& manager, TableID table_id) : bufferManager(manager), table_id(table_id) {}
 
     // Set the tuple to be inserted by this operator.
     void setTupleToInsert(std::unique_ptr<Tuple> tuple) {
@@ -1409,21 +1412,21 @@ public:
     bool next() override {
         if (!tupleToInsert) return false; // No tuple to insert
 
-        for (size_t pageId = 0; pageId < bufferManager.getNumPages(); ++pageId) {
-            auto& page = bufferManager.getPage(pageId);
+        for (size_t pageId = 0; pageId < bufferManager.getNumPages(table_id); ++pageId) {
+            auto& page = bufferManager.getPage(table_id, pageId);
             // Attempt to insert the tuple
             if (page->addTuple(tupleToInsert->clone())) { 
                 // Flush the page to disk after insertion
-                bufferManager.flushPage(pageId); 
+                bufferManager.flushPage(table_id, pageId); 
                 return true; // Insertion successful
             }
         }
 
         // If insertion failed in all existing pages, extend the database and try again
-        bufferManager.extend();
-        auto& newPage = bufferManager.getPage(bufferManager.getNumPages() - 1);
+        bufferManager.extend(table_id);
+        auto& newPage = bufferManager.getPage(table_id, bufferManager.getNumPages(table_id) - 1);
         if (newPage->addTuple(tupleToInsert->clone())) {
-            bufferManager.flushPage(bufferManager.getNumPages() - 1);
+            bufferManager.flushPage(table_id, bufferManager.getNumPages(table_id) - 1);
             return true; // Insertion successful after extending the database
         }
 
@@ -1442,26 +1445,27 @@ public:
 class DeleteOperator : public Operator {
 private:
     BufferManager& bufferManager;
+    TableID tableId;
     size_t pageId;
     size_t tupleId;
 
 public:
-    DeleteOperator(BufferManager& manager, size_t pageId, size_t tupleId) 
-        : bufferManager(manager), pageId(pageId), tupleId(tupleId) {}
+    DeleteOperator(BufferManager& manager, TableID tableId, size_t pageId, size_t tupleId) 
+        : bufferManager(manager), tableId(tableId), pageId(pageId), tupleId(tupleId) {}
 
     void open() override {
         // Not used in this context
     }
 
     bool next() override {
-        auto& page = bufferManager.getPage(pageId);
+        auto& page = bufferManager.getPage(tableId, pageId);
         if (!page) {
             std::cerr << "Page not found." << std::endl;
             return false;
         }
 
         page->deleteTuple(tupleId); // Perform deletion
-        bufferManager.flushPage(pageId); // Flush the page to disk after deletion
+        bufferManager.flushPage(tableId, pageId); // Flush the page to disk after deletion
         return true;
     }
 
@@ -1591,7 +1595,7 @@ public:
         newTuple->addField(std::move(float_field));
         newTuple->addField(std::move(string_field));
 
-        InsertOperator insertOp(buffer_manager);
+        InsertOperator insertOp(buffer_manager, 10);
         insertOp.setTupleToInsert(std::move(newTuple));
         bool status = insertOp.next();
 
