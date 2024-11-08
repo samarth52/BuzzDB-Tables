@@ -1649,7 +1649,7 @@ public:
 
 struct QueryComponents {
     std::vector<int> selectAttributes;
-    TableID table_id = 10;
+    TableID tableId;
     bool sumOperation = false;
     int sumAttributeIndex = -1;
     bool groupBy = false;
@@ -1660,7 +1660,7 @@ struct QueryComponents {
     int upperBound = std::numeric_limits<int>::max();
 };
 
-QueryComponents parseQuery(const std::string& query) {
+QueryComponents parseQuery(TableManager& table_manager, const std::string& query) {
     QueryComponents components;
 
     // Parse selected attributes
@@ -1674,6 +1674,17 @@ QueryComponents parseQuery(const std::string& query) {
             }
         }
         queryStart = selectMatches.suffix().first;
+    }
+
+    // Parse table name
+    std::regex tableRegex("FROM (\\w+)");
+    std::smatch tableMatch;
+    if (std::regex_search(query, tableMatch, tableRegex)) {
+        std::cout << "Table Name=" << tableMatch[1] << std::endl;
+        components.tableId = table_manager.get_table_id(tableMatch[1]);
+        std::cout << "Table Id=" << components.tableId << std::endl;
+    } else {
+        throw std::invalid_argument("Could not find the table name in query");
     }
 
     // Check for SUM operation
@@ -1736,7 +1747,7 @@ void prettyPrint(const QueryComponents& components) {
 void executeQuery(const QueryComponents& components, 
                   BufferManager& buffer_manager) {
     // Stack allocation of ScanOperator
-    ScanOperator scanOp(buffer_manager, components.table_id);
+    ScanOperator scanOp(buffer_manager, components.tableId);
 
     // Using a pointer to Operator to handle polymorphism
     Operator* rootOp = &scanOp;
@@ -1797,18 +1808,20 @@ void executeQuery(const QueryComponents& components,
         std::cout << std::endl;
     }
     rootOp->close();
+    std::cout << std::endl;
 }
 
 class BuzzDB {
 public:
     HashIndex hash_index;
     BufferManager buffer_manager;
+    TableManager table_manager;
 
 public:
     size_t max_number_of_tuples = 5000;
     size_t tuple_insertion_attempt_counter = 0;
 
-    BuzzDB(){
+    BuzzDB(): table_manager(buffer_manager) {
         // Storage Manager automatically created
     }
 
@@ -1850,11 +1863,13 @@ public:
     void executeQueries() {
 
         std::vector<std::string> test_queries = {
-            "SUM{1} GROUP BY {1} WHERE {1} > 2 and {1} < 6"
+            "SUM{1} FROM system_class GROUP BY {1} WHERE {1} > 2 and {1} < 6",
+            "{0}, {1} FROM system_class",
+            "{0}, {1}, {2}, {3} FROM system_column",
         };
 
         for (const auto& query : test_queries) {
-            auto components = parseQuery(query);
+            auto components = parseQuery(table_manager, query);
             //prettyPrint(components);
             executeQuery(components, buffer_manager);
         }
@@ -1874,9 +1889,8 @@ int main() {
         return 1;
     }
 
-    TableManager table_manager(db.buffer_manager);
-    auto schema1 = table_manager.get_table_schema(SYSTEM_CLASS_TABLE_ID);
-    auto schema2 = table_manager.get_table_schema("system_column");
+    auto schema1 = db.table_manager.get_table_schema(SYSTEM_CLASS_TABLE_ID);
+    auto schema2 = db.table_manager.get_table_schema("system_column");
     std::cout << *schema1 << std::endl;
     std::cout << *schema2 << std::endl;
 
@@ -1885,14 +1899,14 @@ int main() {
     new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT));
     new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING));
     new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT));
-    bool create_table_res = table_manager.create_table(new_schema, false);
+    bool create_table_res = db.table_manager.create_table(new_schema, false);
 
     // assert(create_table_res == true);
 
     // std::cout << *new_schema << std::endl;
 
-    auto schema3 = table_manager.get_table_schema("test_table");
-    auto schema4 = table_manager.get_table_schema("test_table");
+    auto schema3 = db.table_manager.get_table_schema("test_table");
+    auto schema4 = db.table_manager.get_table_schema("test_table");
     // std::cout << "here5: " << /new_schema->find_column_idx("hello") << std::endl;
     // std::cout << "here6: " << schema3->find_column_idx("hello") << std::endl;
 
