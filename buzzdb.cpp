@@ -1663,19 +1663,6 @@ struct QueryComponents {
 QueryComponents parseQuery(TableManager& table_manager, const std::string& query) {
     QueryComponents components;
 
-    // Parse selected attributes
-    std::regex selectRegex("\\{(\\d+)\\}(, \\{(\\d+)\\})?");
-    std::smatch selectMatches;
-    std::string::const_iterator queryStart(query.cbegin());
-    while (std::regex_search(queryStart, query.cend(), selectMatches, selectRegex)) {
-        for (size_t i = 1; i < selectMatches.size(); i += 2) {
-            if (!selectMatches[i].str().empty()) {
-                components.selectAttributes.push_back(std::stoi(selectMatches[i]) - 1);
-            }
-        }
-        queryStart = selectMatches.suffix().first;
-    }
-
     // Parse table name
     std::regex tableRegex("FROM (\\w+)");
     std::smatch tableMatch;
@@ -1685,6 +1672,25 @@ QueryComponents parseQuery(TableManager& table_manager, const std::string& query
         std::cout << "Table Id=" << components.tableId << std::endl;
     } else {
         throw std::invalid_argument("Could not find the table name in query");
+    }
+
+    auto tableSchema = table_manager.get_table_schema(components.tableId);
+
+    // Parse selected attributes
+    std::regex selectRegex("SELECT (\\w+)(, (\\w+))?");
+    std::smatch selectMatches;
+    std::string::const_iterator queryStart(query.cbegin());
+    while (std::regex_search(queryStart, query.cend(), selectMatches, selectRegex)) {
+        for (size_t i = 1; i < selectMatches.size(); i += 2) {
+            if (!selectMatches[i].str().empty()) {
+                auto columnIdx = tableSchema->find_column_idx(selectMatches[i]);
+                if (columnIdx == INVALID_VALUE) {
+                    throw std::invalid_argument("Column name not found in table schema: " + selectMatches[i].str());
+                }
+                components.selectAttributes.push_back(columnIdx);
+            }
+        }
+        queryStart = selectMatches.suffix().first;
     }
 
     // Check for SUM operation
@@ -1863,9 +1869,10 @@ public:
     void executeQueries() {
 
         std::vector<std::string> test_queries = {
-            "SUM{1} FROM system_class GROUP BY {1} WHERE {1} > 2 and {1} < 6",
-            "{0}, {1} FROM system_class",
-            "{0}, {1}, {2}, {3} FROM system_column",
+            "SELECT id, name FROM system_class",
+            "SELECT name FROM system_class",
+            "SELECT SUM{1} FROM system_class GROUP BY {1} WHERE {1} > 2 and {1} < 6",
+            "SELECT {0}, {1}, {2}, {3} FROM system_column",
         };
 
         for (const auto& query : test_queries) {
