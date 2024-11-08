@@ -1251,158 +1251,6 @@ private:
 
 };
 
-struct QueryComponents {
-    std::vector<int> selectAttributes;
-    TableID table_id = 10;
-    bool sumOperation = false;
-    int sumAttributeIndex = -1;
-    bool groupBy = false;
-    int groupByAttributeIndex = -1;
-    bool whereCondition = false;
-    int whereAttributeIndex = -1;
-    int lowerBound = std::numeric_limits<int>::min();
-    int upperBound = std::numeric_limits<int>::max();
-};
-
-QueryComponents parseQuery(const std::string& query) {
-    QueryComponents components;
-
-    // Parse selected attributes
-    std::regex selectRegex("\\{(\\d+)\\}(, \\{(\\d+)\\})?");
-    std::smatch selectMatches;
-    std::string::const_iterator queryStart(query.cbegin());
-    while (std::regex_search(queryStart, query.cend(), selectMatches, selectRegex)) {
-        for (size_t i = 1; i < selectMatches.size(); i += 2) {
-            if (!selectMatches[i].str().empty()) {
-                components.selectAttributes.push_back(std::stoi(selectMatches[i]) - 1);
-            }
-        }
-        queryStart = selectMatches.suffix().first;
-    }
-
-    // Check for SUM operation
-    std::regex sumRegex("SUM\\{(\\d+)\\}");
-    std::smatch sumMatches;
-    if (std::regex_search(query, sumMatches, sumRegex)) {
-        components.sumOperation = true;
-        components.sumAttributeIndex = std::stoi(sumMatches[1]) - 1;
-    }
-
-    // Check for GROUP BY clause
-    std::regex groupByRegex("GROUP BY \\{(\\d+)\\}");
-    std::smatch groupByMatches;
-    if (std::regex_search(query, groupByMatches, groupByRegex)) {
-        components.groupBy = true;
-        components.groupByAttributeIndex = std::stoi(groupByMatches[1]) - 1;
-    }
-
-    // Extract WHERE conditions more accurately
-    std::regex whereRegex("\\{(\\d+)\\} > (\\d+) and \\{(\\d+)\\} < (\\d+)");
-    std::smatch whereMatches;
-    if (std::regex_search(query, whereMatches, whereRegex)) {
-        components.whereCondition = true;
-        // Correctly identify the attribute index for the WHERE condition
-        components.whereAttributeIndex = std::stoi(whereMatches[1]) - 1;
-        components.lowerBound = std::stoi(whereMatches[2]);
-        // Ensure the same attribute is used for both conditions
-        if (std::stoi(whereMatches[3]) - 1 == components.whereAttributeIndex) {
-            components.upperBound = std::stoi(whereMatches[4]);
-        } else {
-            std::cerr << "Error: WHERE clause conditions apply to different attributes." << std::endl;
-            // Handle error or set components.whereCondition = false;
-        }
-    }
-
-    return components;
-}
-
-void prettyPrint(const QueryComponents& components) {
-    std::cout << "Query Components:\n";
-    std::cout << "  Selected Attributes: ";
-    for (auto attr : components.selectAttributes) {
-        std::cout << "{" << attr + 1 << "} "; // Convert back to 1-based indexing for display
-    }
-    std::cout << "\n  SUM Operation: " << (components.sumOperation ? "Yes" : "No");
-    if (components.sumOperation) {
-        std::cout << " on {" << components.sumAttributeIndex + 1 << "}";
-    }
-    std::cout << "\n  GROUP BY: " << (components.groupBy ? "Yes" : "No");
-    if (components.groupBy) {
-        std::cout << " on {" << components.groupByAttributeIndex + 1 << "}";
-    }
-    std::cout << "\n  WHERE Condition: " << (components.whereCondition ? "Yes" : "No");
-    if (components.whereCondition) {
-        std::cout << " on {" << components.whereAttributeIndex + 1 << "} > " << components.lowerBound << " and < " << components.upperBound;
-    }
-    std::cout << std::endl;
-}
-
-void executeQuery(const QueryComponents& components, 
-                  BufferManager& buffer_manager) {
-    // Stack allocation of ScanOperator
-    ScanOperator scanOp(buffer_manager, components.table_id);
-
-    // Using a pointer to Operator to handle polymorphism
-    Operator* rootOp = &scanOp;
-
-    // Buffer for optional operators to ensure lifetime
-    std::optional<SelectOperator> selectOpBuffer;
-    std::optional<HashAggregationOperator> hashAggOpBuffer;
-
-    // Apply WHERE conditions
-    if (components.whereAttributeIndex != -1) {
-        // Create simple predicates with comparison operators
-        auto predicate1 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.whereAttributeIndex),
-            SimplePredicate::Operand(std::make_unique<Field>(components.lowerBound)),
-            SimplePredicate::ComparisonOperator::GT
-        );
-
-        auto predicate2 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.whereAttributeIndex),
-            SimplePredicate::Operand(std::make_unique<Field>(components.upperBound)),
-            SimplePredicate::ComparisonOperator::LT
-        );
-
-        // Combine simple predicates into a complex predicate with logical AND operator
-        auto complexPredicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-        complexPredicate->addPredicate(std::move(predicate1));
-        complexPredicate->addPredicate(std::move(predicate2));
-
-        // Using std::optional to manage the lifetime of SelectOperator
-        selectOpBuffer.emplace(*rootOp, std::move(complexPredicate));
-        rootOp = &*selectOpBuffer;
-    }
-
-    // Apply SUM or GROUP BY operation
-    if (components.sumOperation || components.groupBy) {
-        std::vector<size_t> groupByAttrs;
-        if (components.groupBy) {
-            groupByAttrs.push_back(static_cast<size_t>(components.groupByAttributeIndex));
-        }
-        std::vector<AggrFunc> aggrFuncs{
-            {AggrFuncType::SUM, static_cast<size_t>(components.sumAttributeIndex)}
-        };
-
-        // Using std::optional to manage the lifetime of HashAggregationOperator
-        hashAggOpBuffer.emplace(*rootOp, groupByAttrs, aggrFuncs);
-        rootOp = &*hashAggOpBuffer;
-    }
-
-    // Execute the Root Operator
-    rootOp->open();
-    while (rootOp->next()) {
-        // Retrieve and print the current tuple
-        const auto& output = rootOp->getOutput();
-        for (const auto& field : output) {
-            field->print();
-            std::cout << " ";
-        }
-        std::cout << std::endl;
-    }
-    rootOp->close();
-}
-
 class InsertOperator : public Operator {
 private:
     BufferManager& bufferManager;
@@ -1799,6 +1647,157 @@ public:
     }
 };
 
+struct QueryComponents {
+    std::vector<int> selectAttributes;
+    TableID table_id = 10;
+    bool sumOperation = false;
+    int sumAttributeIndex = -1;
+    bool groupBy = false;
+    int groupByAttributeIndex = -1;
+    bool whereCondition = false;
+    int whereAttributeIndex = -1;
+    int lowerBound = std::numeric_limits<int>::min();
+    int upperBound = std::numeric_limits<int>::max();
+};
+
+QueryComponents parseQuery(const std::string& query) {
+    QueryComponents components;
+
+    // Parse selected attributes
+    std::regex selectRegex("\\{(\\d+)\\}(, \\{(\\d+)\\})?");
+    std::smatch selectMatches;
+    std::string::const_iterator queryStart(query.cbegin());
+    while (std::regex_search(queryStart, query.cend(), selectMatches, selectRegex)) {
+        for (size_t i = 1; i < selectMatches.size(); i += 2) {
+            if (!selectMatches[i].str().empty()) {
+                components.selectAttributes.push_back(std::stoi(selectMatches[i]) - 1);
+            }
+        }
+        queryStart = selectMatches.suffix().first;
+    }
+
+    // Check for SUM operation
+    std::regex sumRegex("SUM\\{(\\d+)\\}");
+    std::smatch sumMatches;
+    if (std::regex_search(query, sumMatches, sumRegex)) {
+        components.sumOperation = true;
+        components.sumAttributeIndex = std::stoi(sumMatches[1]) - 1;
+    }
+
+    // Check for GROUP BY clause
+    std::regex groupByRegex("GROUP BY \\{(\\d+)\\}");
+    std::smatch groupByMatches;
+    if (std::regex_search(query, groupByMatches, groupByRegex)) {
+        components.groupBy = true;
+        components.groupByAttributeIndex = std::stoi(groupByMatches[1]) - 1;
+    }
+
+    // Extract WHERE conditions more accurately
+    std::regex whereRegex("\\{(\\d+)\\} > (\\d+) and \\{(\\d+)\\} < (\\d+)");
+    std::smatch whereMatches;
+    if (std::regex_search(query, whereMatches, whereRegex)) {
+        components.whereCondition = true;
+        // Correctly identify the attribute index for the WHERE condition
+        components.whereAttributeIndex = std::stoi(whereMatches[1]) - 1;
+        components.lowerBound = std::stoi(whereMatches[2]);
+        // Ensure the same attribute is used for both conditions
+        if (std::stoi(whereMatches[3]) - 1 == components.whereAttributeIndex) {
+            components.upperBound = std::stoi(whereMatches[4]);
+        } else {
+            std::cerr << "Error: WHERE clause conditions apply to different attributes." << std::endl;
+            // Handle error or set components.whereCondition = false;
+        }
+    }
+
+    return components;
+}
+
+void prettyPrint(const QueryComponents& components) {
+    std::cout << "Query Components:\n";
+    std::cout << "  Selected Attributes: ";
+    for (auto attr : components.selectAttributes) {
+        std::cout << "{" << attr + 1 << "} "; // Convert back to 1-based indexing for display
+    }
+    std::cout << "\n  SUM Operation: " << (components.sumOperation ? "Yes" : "No");
+    if (components.sumOperation) {
+        std::cout << " on {" << components.sumAttributeIndex + 1 << "}";
+    }
+    std::cout << "\n  GROUP BY: " << (components.groupBy ? "Yes" : "No");
+    if (components.groupBy) {
+        std::cout << " on {" << components.groupByAttributeIndex + 1 << "}";
+    }
+    std::cout << "\n  WHERE Condition: " << (components.whereCondition ? "Yes" : "No");
+    if (components.whereCondition) {
+        std::cout << " on {" << components.whereAttributeIndex + 1 << "} > " << components.lowerBound << " and < " << components.upperBound;
+    }
+    std::cout << std::endl;
+}
+
+void executeQuery(const QueryComponents& components, 
+                  BufferManager& buffer_manager) {
+    // Stack allocation of ScanOperator
+    ScanOperator scanOp(buffer_manager, components.table_id);
+
+    // Using a pointer to Operator to handle polymorphism
+    Operator* rootOp = &scanOp;
+
+    // Buffer for optional operators to ensure lifetime
+    std::optional<SelectOperator> selectOpBuffer;
+    std::optional<HashAggregationOperator> hashAggOpBuffer;
+
+    // Apply WHERE conditions
+    if (components.whereAttributeIndex != -1) {
+        // Create simple predicates with comparison operators
+        auto predicate1 = std::make_unique<SimplePredicate>(
+            SimplePredicate::Operand(components.whereAttributeIndex),
+            SimplePredicate::Operand(std::make_unique<Field>(components.lowerBound)),
+            SimplePredicate::ComparisonOperator::GT
+        );
+
+        auto predicate2 = std::make_unique<SimplePredicate>(
+            SimplePredicate::Operand(components.whereAttributeIndex),
+            SimplePredicate::Operand(std::make_unique<Field>(components.upperBound)),
+            SimplePredicate::ComparisonOperator::LT
+        );
+
+        // Combine simple predicates into a complex predicate with logical AND operator
+        auto complexPredicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+        complexPredicate->addPredicate(std::move(predicate1));
+        complexPredicate->addPredicate(std::move(predicate2));
+
+        // Using std::optional to manage the lifetime of SelectOperator
+        selectOpBuffer.emplace(*rootOp, std::move(complexPredicate));
+        rootOp = &*selectOpBuffer;
+    }
+
+    // Apply SUM or GROUP BY operation
+    if (components.sumOperation || components.groupBy) {
+        std::vector<size_t> groupByAttrs;
+        if (components.groupBy) {
+            groupByAttrs.push_back(static_cast<size_t>(components.groupByAttributeIndex));
+        }
+        std::vector<AggrFunc> aggrFuncs{
+            {AggrFuncType::SUM, static_cast<size_t>(components.sumAttributeIndex)}
+        };
+
+        // Using std::optional to manage the lifetime of HashAggregationOperator
+        hashAggOpBuffer.emplace(*rootOp, groupByAttrs, aggrFuncs);
+        rootOp = &*hashAggOpBuffer;
+    }
+
+    // Execute the Root Operator
+    rootOp->open();
+    while (rootOp->next()) {
+        // Retrieve and print the current tuple
+        const auto& output = rootOp->getOutput();
+        for (const auto& field : output) {
+            field->print();
+            std::cout << " ";
+        }
+        std::cout << std::endl;
+    }
+    rootOp->close();
+}
 
 class BuzzDB {
 public:
