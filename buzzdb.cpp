@@ -65,14 +65,14 @@ public:
         // Optionally reset other's state if needed
     }
 
-    FieldType getType() const { return type; }
-    int asInt() const { 
+    FieldType get_type() const { return type; }
+    int as_int() const { 
         return *reinterpret_cast<int*>(data.get());
     }
-    float asFloat() const { 
+    float as_float() const { 
         return *reinterpret_cast<float*>(data.get());
     }
-    std::string asString() const { 
+    std::string as_string() const { 
         return std::string(data.get());
     }
 
@@ -90,8 +90,8 @@ public:
     }
 
     void serialize(std::ofstream& out) {
-        std::string serializedData = this->serialize();
-        out << serializedData;
+        std::string serialized_data = this->serialize();
+        out << serialized_data;
     }
 
     static std::unique_ptr<Field> deserialize(std::istream& in) {
@@ -117,18 +117,18 @@ public:
     }
 
     void print() const{
-        switch(getType()){
-            case INT: std::cout << asInt(); break;
-            case FLOAT: std::cout << asFloat(); break;
-            case STRING: std::cout << asString(); break;
+        switch(get_type()){
+            case INT: std::cout << as_int(); break;
+            case FLOAT: std::cout << as_float(); break;
+            case STRING: std::cout << as_string(); break;
         }
     }
 };
 
 bool operator==(const Field& lhs, const Field& rhs) {
-    if (lhs.type != rhs.type) return false; // Different types are never equal
+    if (lhs.get_type() != rhs.get_type()) return false; // Different types are never equal
 
-    switch (lhs.type) {
+    switch (lhs.get_type()) {
         case INT:
             return *reinterpret_cast<const int*>(lhs.data.get()) == *reinterpret_cast<const int*>(rhs.data.get());
         case FLOAT:
@@ -144,11 +144,11 @@ class Tuple {
 public:
     std::vector<std::unique_ptr<Field>> fields;
 
-    void addField(std::unique_ptr<Field> field) {
+    void add_field(std::unique_ptr<Field> field) {
         fields.push_back(std::move(field));
     }
 
-    size_t getSize() const {
+    size_t get_size() const {
         size_t size = 0;
         for (const auto& field : fields) {
             size += field->data_length;
@@ -166,26 +166,26 @@ public:
     }
 
     void serialize(std::ofstream& out) {
-        std::string serializedData = this->serialize();
-        out << serializedData;
+        std::string serialized_data = this->serialize();
+        out << serialized_data;
     }
 
     static std::unique_ptr<Tuple> deserialize(std::istream& in) {
         auto tuple = std::make_unique<Tuple>();
-        size_t fieldCount; in >> fieldCount;
-        for (size_t i = 0; i < fieldCount; ++i) {
-            tuple->addField(Field::deserialize(in));
+        size_t field_count; in >> field_count;
+        for (size_t i = 0; i < field_count; ++i) {
+            tuple->add_field(Field::deserialize(in));
         }
         return tuple;
     }
 
     // Clone method
     std::unique_ptr<Tuple> clone() const {
-        auto clonedTuple = std::make_unique<Tuple>();
+        auto cloned_tuple = std::make_unique<Tuple>();
         for (const auto& field : fields) {
-            clonedTuple->addField(field->clone());
+            cloned_tuple->add_field(field->clone());
         }
-        return clonedTuple;
+        return cloned_tuple;
     }
 
     void print() const {
@@ -224,11 +224,11 @@ public:
     }
 
     // Add a tuple, returns true if it fits, false otherwise.
-    bool addTuple(std::unique_ptr<Tuple> tuple) {
+    bool add_tuple(std::unique_ptr<Tuple> tuple) {
 
         // Serialize the tuple into a char array
-        auto serializedTuple = tuple->serialize();
-        size_t tuple_size = serializedTuple.size();
+        auto serialized_tuple = tuple->serialize();
+        size_t tuple_size = serialized_tuple.size();
 
         // std::cout << "Tuple size: " << tuple_size << " bytes\n";
         // assert(tuple_size == 38);
@@ -282,13 +282,13 @@ public:
 
         // Copy serialized data into the page
         std::memcpy(page_data.get() + offset, 
-                    serializedTuple.c_str(), 
+                    serialized_tuple.c_str(), 
                     tuple_size);
 
         return true;
     }
 
-    bool updateTuple(size_t index, std::unique_ptr<Tuple> tuple) {
+    bool update_tuple(size_t index, std::unique_ptr<Tuple> tuple) {
         assert(index < MAX_SLOTS);
         Slot* slot_array = reinterpret_cast<Slot*>(page_data.get());
 
@@ -302,14 +302,14 @@ public:
             return true;
         }
 
-        bool add_tuple_res = addTuple(std::move(tuple));
+        bool add_tuple_res = add_tuple(std::move(tuple));
         if (add_tuple_res) {
-            deleteTuple(index);
+            delete_tuple(index);
         }
         return add_tuple_res;
     }
 
-    void deleteTuple(size_t index) {
+    void delete_tuple(size_t index) {
         assert(index < MAX_SLOTS);
         Slot* slot_array = reinterpret_cast<Slot*>(page_data.get());
 
@@ -327,10 +327,10 @@ public:
                 assert(slot_array[slot_itr].offset != INVALID_VALUE);
                 const char* tuple_data = page_data.get() + slot_array[slot_itr].offset;
                 std::istringstream iss(tuple_data);
-                auto loadedTuple = Tuple::deserialize(iss);
+                auto loaded_tuple = Tuple::deserialize(iss);
                 std::cout << "Slot " << slot_itr << " : [";
                 std::cout << (uint16_t)(slot_array[slot_itr].offset) << "] :: ";
-                loadedTuple->print();
+                loaded_tuple->print();
             }
         }
         std::cout << "\n";
@@ -358,7 +358,7 @@ template <typename T>
 class LruPolicy : public Policy<T> {
 private:
     // List to keep track of the order of use
-    std::list<T> lruList;
+    std::list<T> lru_list;
 
     // Default invalid value
     const T invalid_value;
@@ -366,11 +366,11 @@ private:
     // Map to find a page's iterator in the list efficiently
     std::unordered_map<T, typename std::list<T>::iterator> map;
 
-    size_t cacheSize;
+    size_t cache_size;
 
 public:
 
-    LruPolicy(size_t cacheSize, T invalid_value) : cacheSize(cacheSize), invalid_value(invalid_value) {}
+    LruPolicy(size_t cache_size, T invalid_value) : cache_size(cache_size), invalid_value(invalid_value) {}
 
     bool touch(T id) override {
         //printList("LRU", lruList);
@@ -379,19 +379,19 @@ public:
         // If id already in the list, remove it
         if (map.find(id) != map.end()) {
             found = true;
-            lruList.erase(map[id]);
+            lru_list.erase(map[id]);
             map.erase(id);            
         }
 
         // If cache is full, evict
-        if(lruList.size() == cacheSize){
+        if(lru_list.size() == cache_size){
             evict();
         }
 
-        if(lruList.size() < cacheSize){
+        if(lru_list.size() < cache_size){
             // Add the id to the front of the list
-            lruList.emplace_front(id);
-            map[id] = lruList.begin();
+            lru_list.emplace_front(id);
+            map[id] = lru_list.begin();
         }
 
         return found;
@@ -400,10 +400,10 @@ public:
     T evict() override {
         // Evict the least recently used id
         T evictedId = invalid_value;
-        if(lruList.size() != 0){
-            evictedId = lruList.back();
+        if(lru_list.size() != 0){
+            evictedId = lru_list.back();
             map.erase(evictedId);
-            lruList.pop_back();
+            lru_list.pop_back();
         }
         return evictedId;
     }
@@ -577,7 +577,7 @@ private:
 
     using PageMap = std::unordered_map<TablePageIDs, std::unique_ptr<SlottedPage>>;
     StorageManager storage_manager;
-    PageMap pageMap;
+    PageMap page_map;
     std::unique_ptr<Policy<TablePageIDs>> policy;
 
 public:
@@ -588,57 +588,44 @@ public:
         return storage_manager.file_exists(table_id);
     }
 
-    std::unique_ptr<SlottedPage>& getPage(TableID table_id, PageID page_id) {
+    std::unique_ptr<SlottedPage>& get_page(TableID table_id, PageID page_id) {
         TablePageIDs tp_ids(table_id, page_id);
 
-        auto it = pageMap.find(tp_ids);
-        if (it != pageMap.end()) {
+        auto it = page_map.find(tp_ids);
+        if (it != page_map.end()) {
             policy->touch(tp_ids);
-            return pageMap.find(tp_ids)->second;
+            return page_map.find(tp_ids)->second;
         }
 
-        if (pageMap.size() >= MAX_PAGES_IN_MEMORY) {
+        if (page_map.size() >= MAX_PAGES_IN_MEMORY) {
             auto evicted_tp_ids = policy->evict();
             if(evicted_tp_ids.table_id != INVALID_VALUE){
                 std::cout << "Evicting Table ID: " << evicted_tp_ids.table_id << " :: Page ID: " << evicted_tp_ids.page_id << "\n";
-                storage_manager.flush(evicted_tp_ids.table_id, evicted_tp_ids.page_id, pageMap[evicted_tp_ids]);
-                pageMap[evicted_tp_ids].reset();
-                pageMap.erase(evicted_tp_ids);
+                storage_manager.flush(evicted_tp_ids.table_id, evicted_tp_ids.page_id, page_map[evicted_tp_ids]);
+                page_map[evicted_tp_ids].reset();
+                page_map.erase(evicted_tp_ids);
             }
         }
 
         auto page = storage_manager.load(table_id, page_id);
         policy->touch(tp_ids);
         std::cout << "Loading Table ID: " << table_id << " :: Page ID: " << page_id <<  "\n";
-        pageMap[tp_ids] = std::move(page);
-        return pageMap[tp_ids];
+        page_map[tp_ids] = std::move(page);
+        return page_map[tp_ids];
     }
 
-    void flushPage(TableID table_id, PageID page_id) {
+    void flush_page(TableID table_id, PageID page_id) {
         //std::cout << "Flush page " << page_id << "\n";
-        storage_manager.flush(table_id, page_id, pageMap[TablePageIDs(table_id, page_id)]);
+        storage_manager.flush(table_id, page_id, page_map[TablePageIDs(table_id, page_id)]);
     }
 
     void extend(TableID table_id) {
         storage_manager.extend(table_id);
     }
     
-    size_t getNumPages(TableID table_id) {
+    size_t get_num_pages(TableID table_id) {
         return storage_manager.get_num_pages(table_id);
     }
-
-    // std::unique_ptr<SlottedPage>& getPage(PageID page_id) {
-    //     return getPage(0, page_id);
-    // }
-    // void flushPage(PageID page_id) {
-    //     flushPage(0, page_id);
-    // }
-    // void extend() {
-    //     extend(0);
-    // }
-    // size_t getNumPages() {
-    //     return getNumPages(0);
-    // }
 };
 
 class HashIndex {
@@ -657,9 +644,9 @@ private:
     };
 
     static const size_t capacity = 100; // Hard-coded capacity
-    HashEntry hashTable[capacity]; // Static-sized array
+    HashEntry hash_table[capacity]; // Static-sized array
 
-    size_t hashFunction(int key) const {
+    size_t hash_function(int key) const {
         return key % capacity; // Simple modulo hash function
     }
 
@@ -667,25 +654,25 @@ public:
     HashIndex() {
         // Initialize all entries as non-existing by default
         for (size_t i = 0; i < capacity; ++i) {
-            hashTable[i] = HashEntry();
+            hash_table[i] = HashEntry();
         }
     }
 
-    void insertOrUpdate(int key, int value) {
-        size_t index = hashFunction(key);
+    void insert_or_update(int key, int value) {
+        size_t index = hash_function(key);
         size_t originalIndex = index;
         bool inserted = false;
         int i = 0; // Attempt counter
 
         do {
-            if (!hashTable[index].exists) {
-                hashTable[index] = HashEntry(key, value, true);
-                hashTable[index].position = index;
+            if (!hash_table[index].exists) {
+                hash_table[index] = HashEntry(key, value, true);
+                hash_table[index].position = index;
                 inserted = true;
                 break;
-            } else if (hashTable[index].key == key) {
-                hashTable[index].value += value;
-                hashTable[index].position = index;
+            } else if (hash_table[index].key == key) {
+                hash_table[index].value += value;
+                hash_table[index].position = index;
                 inserted = true;
                 break;
             }
@@ -698,15 +685,15 @@ public:
         }
     }
 
-   int getValue(int key) const {
-        size_t index = hashFunction(key);
+   int get_value(int key) const {
+        size_t index = hash_function(key);
         size_t originalIndex = index;
 
         do {
-            if (hashTable[index].exists && hashTable[index].key == key) {
-                return hashTable[index].value;
+            if (hash_table[index].exists && hash_table[index].key == key) {
+                return hash_table[index].value;
             }
-            if (!hashTable[index].exists) {
+            if (!hash_table[index].exists) {
                 break; // Stop if we find a slot that has never been used
             }
             index = (index + 1) % capacity;
@@ -718,13 +705,13 @@ public:
     // This method is not efficient for range queries 
     // as this is an unordered index
     // but is included for comparison
-    std::vector<int> rangeQuery(int lowerBound, int upperBound) const {
+    std::vector<int> range_query(int lowerBound, int upperBound) const {
         std::vector<int> values;
         for (size_t i = 0; i < capacity; ++i) {
-            if (hashTable[i].exists && hashTable[i].key >= lowerBound && hashTable[i].key <= upperBound) {
-                std::cout << "Key: " << hashTable[i].key << 
-                ", Value: " << hashTable[i].value << std::endl;
-                values.push_back(hashTable[i].value);
+            if (hash_table[i].exists && hash_table[i].key >= lowerBound && hash_table[i].key <= upperBound) {
+                std::cout << "Key: " << hash_table[i].key << 
+                ", Value: " << hash_table[i].value << std::endl;
+                values.push_back(hash_table[i].value);
             }
         }
         return values;
@@ -732,10 +719,10 @@ public:
 
     void print() const {
         for (size_t i = 0; i < capacity; ++i) {
-            if (hashTable[i].exists) {
-                std::cout << "Position: " << hashTable[i].position << 
-                ", Key: " << hashTable[i].key << 
-                ", Value: " << hashTable[i].value << std::endl;
+            if (hash_table[i].exists) {
+                std::cout << "Position: " << hash_table[i].position << 
+                ", Key: " << hash_table[i].key << 
+                ", Value: " << hash_table[i].value << std::endl;
             }
         }
     }
@@ -758,7 +745,7 @@ class Operator {
     /// This returns the pointers to the Fields of the generated tuple. When
     /// `next()` returns true, the Fields will contain the values for the
     /// next tuple. Each `Field` pointer in the vector stands for one attribute of the tuple.
-    virtual std::vector<std::unique_ptr<Field>> getOutput() = 0;
+    virtual std::vector<std::unique_ptr<Field>> get_output() = 0;
 };
 
 class UnaryOperator : public Operator {
@@ -785,88 +772,88 @@ class BinaryOperator : public Operator {
 
 class ScanOperator : public Operator {
 private:
-    BufferManager& bufferManager;
+    BufferManager& buffer_manager;
     TableID table_id;
-    size_t currentPageIndex = 0;
-    size_t currentSlotIndex = 0;
-    std::unique_ptr<Tuple> currentTuple;
+    size_t current_page_index = 0;
+    size_t current_slot_index = 0;
+    std::unique_ptr<Tuple> current_tuple;
     size_t tuple_count = 0;
 
 public:
-    ScanOperator(BufferManager& manager, TableID table_id) : bufferManager(manager), table_id(table_id) {}
+    ScanOperator(BufferManager& manager, TableID table_id) : buffer_manager(manager), table_id(table_id) {}
 
     void open() override {
-        currentPageIndex = 0;
-        currentSlotIndex = 0;
-        currentTuple.reset(); // Ensure currentTuple is reset
+        current_page_index = 0;
+        current_slot_index = 0;
+        current_tuple.reset(); // Ensure current_tuple is reset
         tuple_count = 0;
-        // loadNextTuple();
+        // load_next_tuple();
     }
 
     bool next() override {
-        // if (!currentTuple) return false; // No more tuples available
+        // if (!current_tuple) return false; // No more tuples available
 
-        loadNextTuple();
-        return currentTuple != nullptr;
+        load_next_tuple();
+        return current_tuple != nullptr;
     }
 
     void close() override {
         std::cout << "Scan Operator tuple_count: " << tuple_count << "\n";
-        currentPageIndex = 0;
-        currentSlotIndex = 0;
-        currentTuple.reset();
+        current_page_index = 0;
+        current_slot_index = 0;
+        current_tuple.reset();
         tuple_count = 0;
     }
 
-    std::vector<std::unique_ptr<Field>> getOutput() override {
-        if (currentTuple) {
-            return std::move(currentTuple->fields);
+    std::vector<std::unique_ptr<Field>> get_output() override {
+        if (current_tuple) {
+            return std::move(current_tuple->fields);
         }
         return {}; // Return an empty vector if no tuple is available
     }
 
 private:
-    void loadNextTuple() {
-        while (currentPageIndex < bufferManager.getNumPages(table_id)) {
-            auto& currentPage = bufferManager.getPage(table_id, currentPageIndex);
-            if (!currentPage || currentSlotIndex >= MAX_SLOTS) {
-                currentSlotIndex = 0; // Reset slot index when moving to a new page
+    void load_next_tuple() {
+        while (current_page_index < buffer_manager.get_num_pages(table_id)) {
+            auto& current_page = buffer_manager.get_page(table_id, current_page_index);
+            if (!current_page || current_slot_index >= MAX_SLOTS) {
+                current_slot_index = 0; // Reset slot index when moving to a new page
             }
 
-            char* page_buffer = currentPage->page_data.get();
+            char* page_buffer = current_page->page_data.get();
             Slot* slot_array = reinterpret_cast<Slot*>(page_buffer);
 
-            while (currentSlotIndex < MAX_SLOTS) {
-                if (!slot_array[currentSlotIndex].empty) {
-                    assert(slot_array[currentSlotIndex].offset != INVALID_VALUE);
-                    const char* tuple_data = page_buffer + slot_array[currentSlotIndex].offset;
-                    std::istringstream iss(std::string(tuple_data, slot_array[currentSlotIndex].length));
-                    currentTuple = Tuple::deserialize(iss);
-                    currentSlotIndex++; // Move to the next slot for the next call
+            while (current_slot_index < MAX_SLOTS) {
+                if (!slot_array[current_slot_index].empty) {
+                    assert(slot_array[current_slot_index].offset != INVALID_VALUE);
+                    const char* tuple_data = page_buffer + slot_array[current_slot_index].offset;
+                    std::istringstream iss(std::string(tuple_data, slot_array[current_slot_index].length));
+                    current_tuple = Tuple::deserialize(iss);
+                    current_slot_index++; // Move to the next slot for the next call
                     tuple_count++;
                     return; // Tuple loaded successfully
                 }
-                currentSlotIndex++;
+                current_slot_index++;
             }
 
             // Increment page index after exhausting current page
-            currentPageIndex++;
+            current_page_index++;
         }
 
         // No more tuples are available
-        currentTuple.reset();
+        current_tuple.reset();
     }
 };
 
 class IPredicate {
 public:
     virtual ~IPredicate() = default;
-    virtual bool check(const std::vector<std::unique_ptr<Field>>& tupleFields) const = 0;
+    virtual bool check(const std::vector<std::unique_ptr<Field>>& tuple_fields) const = 0;
 };
 
-void printTuple(const std::vector<std::unique_ptr<Field>>& tupleFields) {
+void printTuple(const std::vector<std::unique_ptr<Field>>& tuple_fields) {
     std::cout << "Tuple: [";
-    for (const auto& field : tupleFields) {
+    for (const auto& field : tuple_fields) {
         field->print(); // Assuming `print()` is a method that prints field content
         std::cout << " ";
     }
@@ -879,11 +866,11 @@ public:
     enum ComparisonOperator { EQ, NE, GT, GE, LT, LE }; // Renamed from PredicateType
 
     struct Operand {
-        std::unique_ptr<Field> directValue;
+        std::unique_ptr<Field> direct_value;
         size_t index;
         OperandType type;
 
-        Operand(std::unique_ptr<Field> value) : directValue(std::move(value)), type(DIRECT) {}
+        Operand(std::unique_ptr<Field> value) : direct_value(std::move(value)), type(DIRECT) {}
         Operand(size_t idx) : index(idx), type(INDIRECT) {}
     };
 
@@ -894,47 +881,47 @@ public:
     SimplePredicate(Operand left, Operand right, ComparisonOperator op)
         : left_operand(std::move(left)), right_operand(std::move(right)), comparison_operator(op) {}
 
-    bool check(const std::vector<std::unique_ptr<Field>>& tupleFields) const {
-        const Field* leftField = nullptr;
-        const Field* rightField = nullptr;
+    bool check(const std::vector<std::unique_ptr<Field>>& tuple_fields) const {
+        const Field* left_field = nullptr;
+        const Field* right_field = nullptr;
 
         if (left_operand.type == DIRECT) {
-            leftField = left_operand.directValue.get();
+            left_field = left_operand.direct_value.get();
         } else if (left_operand.type == INDIRECT) {
-            leftField = tupleFields[left_operand.index].get();
+            left_field = tuple_fields[left_operand.index].get();
         }
 
         if (right_operand.type == DIRECT) {
-            rightField = right_operand.directValue.get();
+            right_field = right_operand.direct_value.get();
         } else if (right_operand.type == INDIRECT) {
-            rightField = tupleFields[right_operand.index].get();
+            right_field = tuple_fields[right_operand.index].get();
         }
 
-        if (leftField == nullptr || rightField == nullptr) {
+        if (left_field == nullptr || right_field == nullptr) {
             std::cerr << "Error: Invalid field reference.\n";
             return false;
         }
 
-        if (leftField->getType() != rightField->getType()) {
+        if (left_field->get_type() != right_field->get_type()) {
             std::cerr << "Error: Comparing fields of different types.\n";
             return false;
         }
 
         // Perform comparison based on field type
-        switch (leftField->getType()) {
+        switch (left_field->get_type()) {
             case FieldType::INT: {
-                int left_val = leftField->asInt();
-                int right_val = rightField->asInt();
+                int left_val = left_field->as_int();
+                int right_val = right_field->as_int();
                 return compare(left_val, right_val);
             }
             case FieldType::FLOAT: {
-                float left_val = leftField->asFloat();
-                float right_val = rightField->asFloat();
+                float left_val = left_field->as_float();
+                float right_val = right_field->as_float();
                 return compare(left_val, right_val);
             }
             case FieldType::STRING: {
-                std::string left_val = leftField->asString();
-                std::string right_val = rightField->asString();
+                std::string left_val = left_field->as_string();
+                std::string right_val = right_field->as_string();
                 return compare(left_val, right_val);
             }
             default:
@@ -976,18 +963,18 @@ public:
         predicates.push_back(std::move(predicate));
     }
 
-    bool check(const std::vector<std::unique_ptr<Field>>& tupleFields) const {
+    bool check(const std::vector<std::unique_ptr<Field>>& tuple_fields) const {
         
         if (logic_operator == AND) {
             for (const auto& pred : predicates) {
-                if (!pred->check(tupleFields)) {
+                if (!pred->check(tuple_fields)) {
                     return false; // If any predicate fails, the AND condition fails
                 }
             }
             return true; // All predicates passed
         } else if (logic_operator == OR) {
             for (const auto& pred : predicates) {
-                if (pred->check(tupleFields)) {
+                if (pred->check(tuple_fields)) {
                     return true; // If any predicate passes, the OR condition passes
                 }
             }
@@ -1004,7 +991,7 @@ class SelectOperator : public UnaryOperator {
 private:
     std::unique_ptr<IPredicate> predicate;
     bool has_next;
-    std::vector<std::unique_ptr<Field>> currentOutput; // Store the current output here
+    std::vector<std::unique_ptr<Field>> current_output; // Store the current output here
 
 public:
     SelectOperator(Operator& input, std::unique_ptr<IPredicate> predicate)
@@ -1013,42 +1000,42 @@ public:
     void open() override {
         input->open();
         has_next = false;
-        currentOutput.clear(); // Ensure currentOutput is cleared at the beginning
+        current_output.clear(); // Ensure current_output is cleared at the beginning
     }
 
     bool next() override {
         while (input->next()) {
-            const auto& output = input->getOutput(); // Temporarily hold the output
+            const auto& output = input->get_output(); // Temporarily hold the output
             if (predicate->check(output)) {
                 // If the predicate is satisfied, store the output in the member variable
-                currentOutput.clear(); // Clear previous output
+                current_output.clear(); // Clear previous output
                 for (const auto& field : output) {
                     // Assuming Field class has a clone method or copy constructor to duplicate fields
-                    currentOutput.push_back(field->clone());
+                    current_output.push_back(field->clone());
                 }
                 has_next = true;
                 return true;
             }
         }
         has_next = false;
-        currentOutput.clear(); // Clear output if no more tuples satisfy the predicate
+        current_output.clear(); // Clear output if no more tuples satisfy the predicate
         return false;
     }
 
     void close() override {
         input->close();
-        currentOutput.clear(); // Ensure currentOutput is cleared at the end
+        current_output.clear(); // Ensure current_output is cleared at the end
     }
 
-    std::vector<std::unique_ptr<Field>> getOutput() override {
+    std::vector<std::unique_ptr<Field>> get_output() override {
         if (has_next) {
-            // Since currentOutput already holds the desired output, simply return it
+            // Since current_output already holds the desired output, simply return it
             // Need to create a deep copy to return since we're returning by value
-            std::vector<std::unique_ptr<Field>> outputCopy;
-            for (const auto& field : currentOutput) {
-                outputCopy.push_back(field->clone()); // Clone each field
+            std::vector<std::unique_ptr<Field>> output_copy;
+            for (const auto& field : current_output) {
+                output_copy.push_back(field->clone()); // Clone each field
             }
-            return outputCopy;
+            return output_copy;
         } else {
             return {}; // Return an empty vector if no matching tuple is found
         }
@@ -1074,26 +1061,26 @@ private:
             std::size_t hash = 0;
             for (const auto& field : fields) {
                 std::hash<std::string> hasher;
-                std::size_t fieldHash = 0;
+                std::size_t field_hash = 0;
 
                 // Depending on the type, hash the corresponding data
                 switch (field.type) {
                     case INT: {
                         // Convert integer data to string and hash
                         int value = *reinterpret_cast<const int*>(field.data.get());
-                        fieldHash = hasher(std::to_string(value));
+                        field_hash = hasher(std::to_string(value));
                         break;
                     }
                     case FLOAT: {
                         // Convert float data to string and hash
                         float value = *reinterpret_cast<const float*>(field.data.get());
-                        fieldHash = hasher(std::to_string(value));
+                        field_hash = hasher(std::to_string(value));
                         break;
                     }
                     case STRING: {
                         // Directly hash the string data
                         std::string value(field.data.get(), field.data_length - 1); // Exclude null-terminator
-                        fieldHash = hasher(value);
+                        field_hash = hasher(value);
                         break;
                     }
                     default:
@@ -1101,7 +1088,7 @@ private:
                 }
 
                 // Combine the hash of the current field with the hash so far
-                hash ^= fieldHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+                hash ^= field_hash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
             }
             return hash;
         }
@@ -1121,7 +1108,7 @@ public:
         std::unordered_map<std::vector<Field>, std::vector<Field>, FieldVectorHasher> hash_table;
 
         while (input->next()) {
-            const auto& tuple = input->getOutput(); // Assume getOutput returns a reference to the current tuple
+            const auto& tuple = input->get_output(); // Assume get_output returns a reference to the current tuple
 
             // Extract group keys and initialize aggregation values
             std::vector<Field> group_keys;
@@ -1141,7 +1128,7 @@ public:
             for (size_t i = 0; i < aggr_funcs.size(); ++i) {
                 // Simplified update logic for demonstration
                 // You'll need to implement actual aggregation logic here
-                aggr_values[i] = updateAggregate(aggr_funcs[i], aggr_values[i], *tuple[aggr_funcs[i].attr_index]);
+                aggr_values[i] = update_aggregate(aggr_funcs[i], aggr_values[i], *tuple[aggr_funcs[i].attr_index]);
             }
         }
 
@@ -1152,10 +1139,10 @@ public:
             Tuple output_tuple;
             // Assuming Tuple has a method to add Fields
             for (const auto& key : group_keys) {
-                output_tuple.addField(std::make_unique<Field>(key)); // Add group keys to the tuple
+                output_tuple.add_field(std::make_unique<Field>(key)); // Add group keys to the tuple
             }
             for (const auto& value : aggr_values) {
-                output_tuple.addField(std::make_unique<Field>(value)); // Add aggregated values to the tuple
+                output_tuple.add_field(std::make_unique<Field>(value)); // Add aggregated values to the tuple
             }
             output_tuples.push_back(std::move(output_tuple));
         }
@@ -1173,69 +1160,69 @@ public:
         input->close();
     }
 
-    std::vector<std::unique_ptr<Field>> getOutput() override {
-        std::vector<std::unique_ptr<Field>> outputCopy;
+    std::vector<std::unique_ptr<Field>> get_output() override {
+        std::vector<std::unique_ptr<Field>> output_copy;
 
         if (output_tuples_index == 0 || output_tuples_index > output_tuples.size()) {
             // If there is no current tuple because next() hasn't been called yet or we're past the last tuple,
             // return an empty vector.
-            return outputCopy; // This will be an empty vector
+            return output_copy; // This will be an empty vector
         }
 
         // Assuming that output_tuples stores Tuple objects and each Tuple has a vector of Field objects or similar
-        const auto& currentTuple = output_tuples[output_tuples_index - 1]; // Adjust for 0-based indexing after increment in next()
+        const auto& current_tuple = output_tuples[output_tuples_index - 1]; // Adjust for 0-based indexing after increment in next()
 
         // Assuming the Tuple class provides a way to access its fields, e.g., a method or a public member
-        for (const auto& field : currentTuple.fields) {
-            outputCopy.push_back(field->clone()); // Use the clone method to create a deep copy of each field
+        for (const auto& field : current_tuple.fields) {
+            output_copy.push_back(field->clone()); // Use the clone method to create a deep copy of each field
         }
 
-        return outputCopy;
+        return output_copy;
     }
 
 
 private:
 
-    Field updateAggregate(const AggrFunc& aggrFunc, const Field& currentAggr, const Field& newValue) {
-        if (currentAggr.getType() != newValue.getType()) {
+    Field update_aggregate(const AggrFunc& aggr_func, const Field& current_aggr, const Field& new_value) {
+        if (current_aggr.get_type() != new_value.get_type()) {
             throw std::runtime_error("Mismatched Field types in aggregation.");
         }
 
-        switch (aggrFunc.func) {
+        switch (aggr_func.func) {
             case AggrFuncType::COUNT: {
-                if (currentAggr.getType() == FieldType::INT) {
+                if (current_aggr.get_type() == FieldType::INT) {
                     // For COUNT, simply increment the integer value
-                    int count = currentAggr.asInt() + 1;
+                    int count = current_aggr.as_int() + 1;
                     return Field(count);
                 }
                 break;
             }
             case AggrFuncType::SUM: {
-                if (currentAggr.getType() == FieldType::INT) {
-                    int sum = currentAggr.asInt() + newValue.asInt();
+                if (current_aggr.get_type() == FieldType::INT) {
+                    int sum = current_aggr.as_int() + new_value.as_int();
                     return Field(sum);
-                } else if (currentAggr.getType() == FieldType::FLOAT) {
-                    float sum = currentAggr.asFloat() + newValue.asFloat();
+                } else if (current_aggr.get_type() == FieldType::FLOAT) {
+                    float sum = current_aggr.as_float() + new_value.as_float();
                     return Field(sum);
                 }
                 break;
             }
             case AggrFuncType::MAX: {
-                if (currentAggr.getType() == FieldType::INT) {
-                    int max = std::max(currentAggr.asInt(), newValue.asInt());
+                if (current_aggr.get_type() == FieldType::INT) {
+                    int max = std::max(current_aggr.as_int(), new_value.as_int());
                     return Field(max);
-                } else if (currentAggr.getType() == FieldType::FLOAT) {
-                    float max = std::max(currentAggr.asFloat(), newValue.asFloat());
+                } else if (current_aggr.get_type() == FieldType::FLOAT) {
+                    float max = std::max(current_aggr.as_float(), new_value.as_float());
                     return Field(max);
                 }
                 break;
             }
             case AggrFuncType::MIN: {
-                if (currentAggr.getType() == FieldType::INT) {
-                    int min = std::min(currentAggr.asInt(), newValue.asInt());
+                if (current_aggr.get_type() == FieldType::INT) {
+                    int min = std::min(current_aggr.as_int(), new_value.as_int());
                     return Field(min);
-                } else if (currentAggr.getType() == FieldType::FLOAT) {
-                    float min = std::min(currentAggr.asFloat(), newValue.asFloat());
+                } else if (current_aggr.get_type() == FieldType::FLOAT) {
+                    float min = std::min(current_aggr.as_float(), new_value.as_float());
                     return Field(min);
                 }
                 break;
@@ -1253,16 +1240,16 @@ private:
 
 class InsertOperator : public Operator {
 private:
-    BufferManager& bufferManager;
+    BufferManager& buffer_manager;
     TableID table_id;
-    std::unique_ptr<Tuple> tupleToInsert;
+    std::unique_ptr<Tuple> tuple_to_insert;
 
 public:
-    InsertOperator(BufferManager& manager, TableID table_id) : bufferManager(manager), table_id(table_id) {}
+    InsertOperator(BufferManager& manager, TableID table_id) : buffer_manager(manager), table_id(table_id) {}
 
     // Set the tuple to be inserted by this operator.
-    void setTupleToInsert(std::unique_ptr<Tuple> tuple) {
-        tupleToInsert = std::move(tuple);
+    void set_tuple_to_insert(std::unique_ptr<Tuple> tuple) {
+        tuple_to_insert = std::move(tuple);
     }
 
     void open() override {
@@ -1270,23 +1257,23 @@ public:
     }
 
     bool next() override {
-        if (!tupleToInsert) return false; // No tuple to insert
+        if (!tuple_to_insert) return false; // No tuple to insert
 
-        for (size_t pageId = 0; pageId < bufferManager.getNumPages(table_id); ++pageId) {
-            auto& page = bufferManager.getPage(table_id, pageId);
+        for (size_t page_id = 0; page_id < buffer_manager.get_num_pages(table_id); ++page_id) {
+            auto& page = buffer_manager.get_page(table_id, page_id);
             // Attempt to insert the tuple
-            if (page->addTuple(tupleToInsert->clone())) { 
+            if (page->add_tuple(tuple_to_insert->clone())) { 
                 // Flush the page to disk after insertion
-                bufferManager.flushPage(table_id, pageId); 
+                buffer_manager.flush_page(table_id, page_id); 
                 return true; // Insertion successful
             }
         }
 
         // If insertion failed in all existing pages, extend the database and try again
-        bufferManager.extend(table_id);
-        auto& newPage = bufferManager.getPage(table_id, bufferManager.getNumPages(table_id) - 1);
-        if (newPage->addTuple(tupleToInsert->clone())) {
-            bufferManager.flushPage(table_id, bufferManager.getNumPages(table_id) - 1);
+        buffer_manager.extend(table_id);
+        auto& new_page = buffer_manager.get_page(table_id, buffer_manager.get_num_pages(table_id) - 1);
+        if (new_page->add_tuple(tuple_to_insert->clone())) {
+            buffer_manager.flush_page(table_id, buffer_manager.get_num_pages(table_id) - 1);
             return true; // Insertion successful after extending the database
         }
 
@@ -1297,35 +1284,35 @@ public:
         // Not used in this context
     }
 
-    std::vector<std::unique_ptr<Field>> getOutput() override {
+    std::vector<std::unique_ptr<Field>> get_output() override {
         return {}; // Return empty vector
     }
 };
 
 class DeleteOperator : public Operator {
 private:
-    BufferManager& bufferManager;
-    TableID tableId;
-    size_t pageId;
-    size_t tupleId;
+    BufferManager& buffer_manager;
+    TableID table_id;
+    size_t page_id;
+    size_t tuple_id;
 
 public:
-    DeleteOperator(BufferManager& manager, TableID tableId, size_t pageId, size_t tupleId) 
-        : bufferManager(manager), tableId(tableId), pageId(pageId), tupleId(tupleId) {}
+    DeleteOperator(BufferManager& manager, TableID table_id, size_t page_id, size_t tuple_id) 
+        : buffer_manager(manager), table_id(table_id), page_id(page_id), tuple_id(tuple_id) {}
 
     void open() override {
         // Not used in this context
     }
 
     bool next() override {
-        auto& page = bufferManager.getPage(tableId, pageId);
+        auto& page = buffer_manager.get_page(table_id, page_id);
         if (!page) {
             std::cerr << "Page not found." << std::endl;
             return false;
         }
 
-        page->deleteTuple(tupleId); // Perform deletion
-        bufferManager.flushPage(tableId, pageId); // Flush the page to disk after deletion
+        page->delete_tuple(tuple_id); // Perform deletion
+        buffer_manager.flush_page(table_id, page_id); // Flush the page to disk after deletion
         return true;
     }
 
@@ -1333,7 +1320,7 @@ public:
         // Not used in this context
     }
 
-    std::vector<std::unique_ptr<Field>> getOutput() override {
+    std::vector<std::unique_ptr<Field>> get_output() override {
         return {}; // Return empty vector
     }
 };
@@ -1453,7 +1440,7 @@ private:
     }
 
     void bootstrap_system_next_table_id() {
-        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
+        auto& next_table_id_page = buffer_manager.get_page(SYSTEM_NEXT_TABLE_ID, 0);
         memset(next_table_id_page->page_data.get(), 0, PAGE_SIZE);
         next_table_id = 1;
     }
@@ -1480,7 +1467,7 @@ public:
             return;
         }
 
-        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
+        auto& next_table_id_page = buffer_manager.get_page(SYSTEM_NEXT_TABLE_ID, 0);
         TableID potential_next_table_id = *reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
         next_table_id = potential_next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : potential_next_table_id;
     }
@@ -1488,7 +1475,7 @@ public:
     ~TableManager() {
         schema_map.clear();
 
-        auto& next_table_id_page = buffer_manager.getPage(SYSTEM_NEXT_TABLE_ID, 0);
+        auto& next_table_id_page = buffer_manager.get_page(SYSTEM_NEXT_TABLE_ID, 0);
         TableID* next_table_id_ptr = reinterpret_cast<TableID*>(next_table_id_page->page_data.get());
         *next_table_id_ptr = next_table_id < NUM_SYSTEM_TABLES ? NUM_SYSTEM_TABLES : next_table_id;
     }
@@ -1508,8 +1495,8 @@ public:
         ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
         SelectOperator select_op(scan_op, std::move(table_name_equality_predicate));
         while (select_op.next()) {
-            auto tuple = select_op.getOutput();
-            TableID table_id = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("id")]->asInt();
+            auto tuple = select_op.get_output();
+            TableID table_id = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("id")]->as_int();
 
             if (name_map.size() >= MAX_NAMES_IN_MEMORY) {
                 auto evicted_name = name_policy->evict();
@@ -1557,8 +1544,8 @@ public:
             ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
             SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
             while (select_op.next()) {
-                auto tuple = select_op.getOutput();
-                std::string name = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("name")]->asString();
+                auto tuple = select_op.get_output();
+                std::string name = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("name")]->as_string();
                 table_schema = std::make_shared<TableSchema>(name, table_id);
             }
         }
@@ -1578,11 +1565,11 @@ public:
             ScanOperator scan_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
             SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
             while (select_op.next()) {
-                auto tuple = select_op.getOutput();
+                auto tuple = select_op.get_output();
                 std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
-                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("name")]->asString(),
-                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx")]->asInt(),
-                    FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type")]->asInt())
+                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("name")]->as_string(),
+                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx")]->as_int(),
+                    FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type")]->as_int())
                 );
                 table_schema->add_column(std::move(column));
             }
@@ -1623,9 +1610,9 @@ public:
         // Insert table id and name in system_class
         InsertOperator insert_system_class_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
         std::unique_ptr<Tuple> system_class_tuple = std::make_unique<Tuple>();
-        system_class_tuple->addField(std::make_unique<Field>(table_id));
-        system_class_tuple->addField(std::make_unique<Field>(table_schema->name));
-        insert_system_class_op.setTupleToInsert(std::move(system_class_tuple));
+        system_class_tuple->add_field(std::make_unique<Field>(table_id));
+        system_class_tuple->add_field(std::make_unique<Field>(table_schema->name));
+        insert_system_class_op.set_tuple_to_insert(std::move(system_class_tuple));
         bool insert_system_class_res = insert_system_class_op.next();
         assert(insert_system_class_res == true);
 
@@ -1633,11 +1620,11 @@ public:
         InsertOperator insert_system_column_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
         for (auto& column : table_schema->columns) {
             std::unique_ptr<Tuple> system_column_tuple = std::make_unique<Tuple>();
-            system_column_tuple->addField(std::make_unique<Field>(table_id));
-            system_column_tuple->addField(std::make_unique<Field>(column->name));
-            system_column_tuple->addField(std::make_unique<Field>(column->idx));
-            system_column_tuple->addField(std::make_unique<Field>(column->type));
-            insert_system_column_op.setTupleToInsert(std::move(system_column_tuple));
+            system_column_tuple->add_field(std::make_unique<Field>(table_id));
+            system_column_tuple->add_field(std::make_unique<Field>(column->name));
+            system_column_tuple->add_field(std::make_unique<Field>(column->idx));
+            system_column_tuple->add_field(std::make_unique<Field>(column->type));
+            insert_system_column_op.set_tuple_to_insert(std::move(system_column_tuple));
             bool insert_system_column_res = insert_system_column_op.next();
             assert(insert_system_column_res == true);
         }
@@ -1648,172 +1635,172 @@ public:
 };
 
 struct QueryComponents {
-    std::vector<int> selectAttributes;
-    TableID tableId;
-    bool sumOperation = false;
-    int sumAttributeIndex = -1;
-    bool groupBy = false;
-    int groupByAttributeIndex = -1;
-    bool whereCondition = false;
-    int whereAttributeIndex = -1;
-    int lowerBound = std::numeric_limits<int>::min();
-    int upperBound = std::numeric_limits<int>::max();
+    std::vector<int> select_attributes;
+    TableID table_id;
+    bool sum_operation = false;
+    int sum_attribute_index = -1;
+    bool group_by = false;
+    int group_by_attribute_index = -1;
+    bool where_condition = false;
+    int where_attribute_index = -1;
+    int lower_bound = std::numeric_limits<int>::min();
+    int upper_bound = std::numeric_limits<int>::max();
 };
 
-QueryComponents parseQuery(TableManager& table_manager, const std::string& query) {
+QueryComponents parse_query(TableManager& table_manager, const std::string& query) {
     QueryComponents components;
 
     // Parse table name
-    std::regex tableRegex("FROM (\\w+)");
-    std::smatch tableMatch;
-    if (std::regex_search(query, tableMatch, tableRegex)) {
-        std::cout << "Table Name=" << tableMatch[1] << std::endl;
-        components.tableId = table_manager.get_table_id(tableMatch[1]);
-        std::cout << "Table Id=" << components.tableId << std::endl;
+    std::regex table_regex("FROM (\\w+)");
+    std::smatch table_match;
+    if (std::regex_search(query, table_match, table_regex)) {
+        std::cout << "Table Name=" << table_match[1] << std::endl;
+        components.table_id = table_manager.get_table_id(table_match[1]);
+        std::cout << "Table Id=" << components.table_id << std::endl;
     } else {
         throw std::invalid_argument("Could not find the table name in query");
     }
 
-    auto tableSchema = table_manager.get_table_schema(components.tableId);
+    auto table_schema = table_manager.get_table_schema(components.table_id);
 
     // Parse selected attributes
-    std::regex selectRegex("SELECT (\\w+)(, (\\w+))?");
-    std::smatch selectMatches;
-    std::string::const_iterator queryStart(query.cbegin());
-    while (std::regex_search(queryStart, query.cend(), selectMatches, selectRegex)) {
-        for (size_t i = 1; i < selectMatches.size(); i += 2) {
-            if (!selectMatches[i].str().empty()) {
-                auto columnIdx = tableSchema->find_column_idx(selectMatches[i]);
-                if (columnIdx == INVALID_VALUE) {
-                    throw std::invalid_argument("Column name not found in table schema: " + selectMatches[i].str());
+    std::regex select_regex("SELECT (\\w+)(, (\\w+))?");
+    std::smatch select_matches;
+    std::string::const_iterator query_start(query.cbegin());
+    while (std::regex_search(query_start, query.cend(), select_matches, select_regex)) {
+        for (size_t i = 1; i < select_matches.size(); i += 2) {
+            if (!select_matches[i].str().empty()) {
+                auto column_idx = table_schema->find_column_idx(select_matches[i]);
+                if (column_idx == INVALID_VALUE) {
+                    throw std::invalid_argument("Column name not found in table schema: " + select_matches[i].str());
                 }
-                components.selectAttributes.push_back(columnIdx);
+                components.select_attributes.push_back(column_idx);
             }
         }
-        queryStart = selectMatches.suffix().first;
+        query_start = select_matches.suffix().first;
     }
 
     // Check for SUM operation
-    std::regex sumRegex("SUM\\{(\\d+)\\}");
-    std::smatch sumMatches;
-    if (std::regex_search(query, sumMatches, sumRegex)) {
-        components.sumOperation = true;
-        components.sumAttributeIndex = std::stoi(sumMatches[1]) - 1;
+    std::regex sum_regex("SUM\\{(\\d+)\\}");
+    std::smatch sum_matches;
+    if (std::regex_search(query, sum_matches, sum_regex)) {
+        components.sum_operation = true;
+        components.sum_attribute_index = std::stoi(sum_matches[1]) - 1;
     }
 
     // Check for GROUP BY clause
-    std::regex groupByRegex("GROUP BY \\{(\\d+)\\}");
-    std::smatch groupByMatches;
-    if (std::regex_search(query, groupByMatches, groupByRegex)) {
-        components.groupBy = true;
-        components.groupByAttributeIndex = std::stoi(groupByMatches[1]) - 1;
+    std::regex group_by_regex("GROUP BY \\{(\\d+)\\}");
+    std::smatch group_by_matches;
+    if (std::regex_search(query, group_by_matches, group_by_regex)) {
+        components.group_by = true;
+        components.group_by_attribute_index = std::stoi(group_by_matches[1]) - 1;
     }
 
     // Extract WHERE conditions more accurately
-    std::regex whereRegex("\\{(\\d+)\\} > (\\d+) and \\{(\\d+)\\} < (\\d+)");
-    std::smatch whereMatches;
-    if (std::regex_search(query, whereMatches, whereRegex)) {
-        components.whereCondition = true;
+    std::regex where_regex("\\{(\\d+)\\} > (\\d+) and \\{(\\d+)\\} < (\\d+)");
+    std::smatch where_matches;
+    if (std::regex_search(query, where_matches, where_regex)) {
+        components.where_condition = true;
         // Correctly identify the attribute index for the WHERE condition
-        components.whereAttributeIndex = std::stoi(whereMatches[1]) - 1;
-        components.lowerBound = std::stoi(whereMatches[2]);
+        components.where_attribute_index = std::stoi(where_matches[1]) - 1;
+        components.lower_bound = std::stoi(where_matches[2]);
         // Ensure the same attribute is used for both conditions
-        if (std::stoi(whereMatches[3]) - 1 == components.whereAttributeIndex) {
-            components.upperBound = std::stoi(whereMatches[4]);
+        if (std::stoi(where_matches[3]) - 1 == components.where_attribute_index) {
+            components.upper_bound = std::stoi(where_matches[4]);
         } else {
             std::cerr << "Error: WHERE clause conditions apply to different attributes." << std::endl;
-            // Handle error or set components.whereCondition = false;
+            // Handle error or set components.where_condition = false;
         }
     }
 
     return components;
 }
 
-void prettyPrint(const QueryComponents& components) {
+void pretty_print(const QueryComponents& components) {
     std::cout << "Query Components:\n";
     std::cout << "  Selected Attributes: ";
-    for (auto attr : components.selectAttributes) {
+    for (auto attr : components.select_attributes) {
         std::cout << "{" << attr + 1 << "} "; // Convert back to 1-based indexing for display
     }
-    std::cout << "\n  SUM Operation: " << (components.sumOperation ? "Yes" : "No");
-    if (components.sumOperation) {
-        std::cout << " on {" << components.sumAttributeIndex + 1 << "}";
+    std::cout << "\n  SUM Operation: " << (components.sum_operation ? "Yes" : "No");
+    if (components.sum_operation) {
+        std::cout << " on {" << components.sum_attribute_index + 1 << "}";
     }
-    std::cout << "\n  GROUP BY: " << (components.groupBy ? "Yes" : "No");
-    if (components.groupBy) {
-        std::cout << " on {" << components.groupByAttributeIndex + 1 << "}";
+    std::cout << "\n  GROUP BY: " << (components.group_by ? "Yes" : "No");
+    if (components.group_by) {
+        std::cout << " on {" << components.group_by_attribute_index + 1 << "}";
     }
-    std::cout << "\n  WHERE Condition: " << (components.whereCondition ? "Yes" : "No");
-    if (components.whereCondition) {
-        std::cout << " on {" << components.whereAttributeIndex + 1 << "} > " << components.lowerBound << " and < " << components.upperBound;
+    std::cout << "\n  WHERE Condition: " << (components.where_condition ? "Yes" : "No");
+    if (components.where_condition) {
+        std::cout << " on {" << components.where_attribute_index + 1 << "} > " << components.lower_bound << " and < " << components.upper_bound;
     }
     std::cout << std::endl;
 }
 
-void executeQuery(const QueryComponents& components, 
+void execute_query(const QueryComponents& components, 
                   BufferManager& buffer_manager) {
     // Stack allocation of ScanOperator
-    ScanOperator scanOp(buffer_manager, components.tableId);
+    ScanOperator scan_op(buffer_manager, components.table_id);
 
     // Using a pointer to Operator to handle polymorphism
-    Operator* rootOp = &scanOp;
+    Operator* root_op = &scan_op;
 
     // Buffer for optional operators to ensure lifetime
-    std::optional<SelectOperator> selectOpBuffer;
-    std::optional<HashAggregationOperator> hashAggOpBuffer;
+    std::optional<SelectOperator> select_op_buffer;
+    std::optional<HashAggregationOperator> hash_agg_op_buffer;
 
     // Apply WHERE conditions
-    if (components.whereAttributeIndex != -1) {
+    if (components.where_attribute_index != -1) {
         // Create simple predicates with comparison operators
         auto predicate1 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.whereAttributeIndex),
-            SimplePredicate::Operand(std::make_unique<Field>(components.lowerBound)),
+            SimplePredicate::Operand(components.where_attribute_index),
+            SimplePredicate::Operand(std::make_unique<Field>(components.lower_bound)),
             SimplePredicate::ComparisonOperator::GT
         );
 
         auto predicate2 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.whereAttributeIndex),
-            SimplePredicate::Operand(std::make_unique<Field>(components.upperBound)),
+            SimplePredicate::Operand(components.where_attribute_index),
+            SimplePredicate::Operand(std::make_unique<Field>(components.upper_bound)),
             SimplePredicate::ComparisonOperator::LT
         );
 
         // Combine simple predicates into a complex predicate with logical AND operator
-        auto complexPredicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-        complexPredicate->addPredicate(std::move(predicate1));
-        complexPredicate->addPredicate(std::move(predicate2));
+        auto complex_predicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+        complex_predicate->addPredicate(std::move(predicate1));
+        complex_predicate->addPredicate(std::move(predicate2));
 
         // Using std::optional to manage the lifetime of SelectOperator
-        selectOpBuffer.emplace(*rootOp, std::move(complexPredicate));
-        rootOp = &*selectOpBuffer;
+        select_op_buffer.emplace(*root_op, std::move(complex_predicate));
+        root_op = &*select_op_buffer;
     }
 
     // Apply SUM or GROUP BY operation
-    if (components.sumOperation || components.groupBy) {
-        std::vector<size_t> groupByAttrs;
-        if (components.groupBy) {
-            groupByAttrs.push_back(static_cast<size_t>(components.groupByAttributeIndex));
+    if (components.sum_operation || components.group_by) {
+        std::vector<size_t> group_by_attrs;
+        if (components.group_by) {
+            group_by_attrs.push_back(static_cast<size_t>(components.group_by_attribute_index));
         }
-        std::vector<AggrFunc> aggrFuncs{
-            {AggrFuncType::SUM, static_cast<size_t>(components.sumAttributeIndex)}
+        std::vector<AggrFunc> aggr_funcs{
+            {AggrFuncType::SUM, static_cast<size_t>(components.sum_attribute_index)}
         };
 
         // Using std::optional to manage the lifetime of HashAggregationOperator
-        hashAggOpBuffer.emplace(*rootOp, groupByAttrs, aggrFuncs);
-        rootOp = &*hashAggOpBuffer;
+        hash_agg_op_buffer.emplace(*root_op, group_by_attrs, aggr_funcs);
+        root_op = &*hash_agg_op_buffer;
     }
 
     // Execute the Root Operator
-    rootOp->open();
-    while (rootOp->next()) {
+    root_op->open();
+    while (root_op->next()) {
         // Retrieve and print the current tuple
-        const auto& output = rootOp->getOutput();
+        const auto& output = root_op->get_output();
         for (const auto& field : output) {
             field->print();
             std::cout << " ";
         }
         std::cout << std::endl;
     }
-    rootOp->close();
+    root_op->close();
     std::cout << std::endl;
 }
 
@@ -1836,7 +1823,7 @@ public:
         tuple_insertion_attempt_counter += 1;
 
         // Create a new tuple with the given key and value
-        auto newTuple = std::make_unique<Tuple>();
+        auto new_tuple = std::make_unique<Tuple>();
 
         auto key_field = std::make_unique<Field>(key);
         auto value_field = std::make_unique<Field>(value);
@@ -1844,21 +1831,21 @@ public:
         auto float_field = std::make_unique<Field>(float_val);
         auto string_field = std::make_unique<Field>("buzzdb");
 
-        newTuple->addField(std::move(key_field));
-        newTuple->addField(std::move(value_field));
-        newTuple->addField(std::move(float_field));
-        newTuple->addField(std::move(string_field));
+        new_tuple->add_field(std::move(key_field));
+        new_tuple->add_field(std::move(value_field));
+        new_tuple->add_field(std::move(float_field));
+        new_tuple->add_field(std::move(string_field));
 
-        InsertOperator insertOp(buffer_manager, 10);
-        insertOp.setTupleToInsert(std::move(newTuple));
-        bool status = insertOp.next();
+        InsertOperator insert_op(buffer_manager, 10);
+        insert_op.set_tuple_to_insert(std::move(new_tuple));
+        bool status = insert_op.next();
 
         assert(status == true);
 
         // if (tuple_insertion_attempt_counter % 10 != 0) {
         //     // Assuming you want to delete the first tuple from the first page
-        //     DeleteOperator delOp(buffer_manager, 0, 0); 
-        //     if (!delOp.next()) {
+        //     DeleteOperator del_op(buffer_manager, 0, 0); 
+        //     if (!del_op.next()) {
         //         std::cerr << "Failed to delete tuple." << std::endl;
         //     }
         // }
@@ -1866,7 +1853,7 @@ public:
 
     }
 
-    void executeQueries() {
+    void execute_queries() {
 
         std::vector<std::string> test_queries = {
             "SELECT id, name FROM system_class",
@@ -1876,9 +1863,9 @@ public:
         };
 
         for (const auto& query : test_queries) {
-            auto components = parseQuery(table_manager, query);
-            //prettyPrint(components);
-            executeQuery(components, buffer_manager);
+            auto components = parse_query(table_manager, query);
+            //pretty_print(components);
+            execute_query(components, buffer_manager);
         }
 
     }
@@ -1889,9 +1876,9 @@ int main() {
 
     BuzzDB db;
 
-    std::ifstream inputFile("output.txt");
+    std::ifstream input_file("output.txt");
 
-    if (!inputFile) {
+    if (!input_file) {
         std::cerr << "Unable to open file" << std::endl;
         return 1;
     }
@@ -1922,13 +1909,13 @@ int main() {
 
     int field1, field2;
     int i = 0;
-    while (inputFile >> field1 >> field2) {
+    while (input_file >> field1 >> field2) {
         db.insert(field1, field2);
     }
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    db.executeQueries();
+    db.execute_queries();
 
     auto end = std::chrono::high_resolution_clock::now();
 
