@@ -338,7 +338,7 @@ public:
 };
 
 template <typename T>
-void printList(std::string list_name, const std::list<T>& myList) {
+void print_list(std::string list_name, const std::list<T>& myList) {
         std::cout << list_name << " :: ";
         for (const T& value : myList) {
             std::cout << value << ' ';
@@ -373,7 +373,7 @@ public:
     LruPolicy(size_t cache_size, T invalid_value) : cache_size(cache_size), invalid_value(invalid_value) {}
 
     bool touch(T id) override {
-        //printList("LRU", lruList);
+        //print_list("LRU", lruList);
 
         bool found = false;
         // If id already in the list, remove it
@@ -584,7 +584,7 @@ public:
     BufferManager(): 
     policy(std::make_unique<LruPolicy<TablePageIDs>>(MAX_PAGES_IN_MEMORY, TablePageIDs(INVALID_VALUE, INVALID_VALUE))) {}
 
-    bool fileExists(TableID table_id) {
+    bool file_exists(TableID table_id) {
         return storage_manager.file_exists(table_id);
     }
 
@@ -851,7 +851,7 @@ public:
     virtual bool check(const std::vector<std::unique_ptr<Field>>& tuple_fields) const = 0;
 };
 
-void printTuple(const std::vector<std::unique_ptr<Field>>& tuple_fields) {
+void print_tuple(const std::vector<std::unique_ptr<Field>>& tuple_fields) {
     std::cout << "Tuple: [";
     for (const auto& field : tuple_fields) {
         field->print(); // Assuming `print()` is a method that prints field content
@@ -959,7 +959,7 @@ private:
 public:
     ComplexPredicate(LogicOperator op) : logic_operator(op) {}
 
-    void addPredicate(std::unique_ptr<IPredicate> predicate) {
+    void add_predicate(std::unique_ptr<IPredicate> predicate) {
         predicates.push_back(std::move(predicate));
     }
 
@@ -1462,7 +1462,7 @@ public:
         schema_map[SYSTEM_COLUMN_TABLE_ID] = SYSTEM_COLUMN_SCHEMA;
 
         // If the system tables do not exist, run the bootstrap process
-        if (!buffer_manager.fileExists(SYSTEM_NEXT_TABLE_ID)) {
+        if (!buffer_manager.file_exists(SYSTEM_NEXT_TABLE_ID)) {
             bootstrap_system_tables();
             return;
         }
@@ -1766,8 +1766,8 @@ void execute_query(const QueryComponents& components,
 
         // Combine simple predicates into a complex predicate with logical AND operator
         auto complex_predicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-        complex_predicate->addPredicate(std::move(predicate1));
-        complex_predicate->addPredicate(std::move(predicate2));
+        complex_predicate->add_predicate(std::move(predicate1));
+        complex_predicate->add_predicate(std::move(predicate2));
 
         // Using std::optional to manage the lifetime of SelectOperator
         select_op_buffer.emplace(*root_op, std::move(complex_predicate));
