@@ -1042,6 +1042,65 @@ public:
     }
 };
 
+class ProjectOperator : public UnaryOperator {
+    private:
+        // TODO: Add your implementation here
+        std::vector<size_t> attr_indexes;
+        bool has_next;
+        std::vector<std::unique_ptr<Field>> current_output;
+
+    public:
+        ProjectOperator(Operator& input, std::vector<size_t> attr_indexes)
+            : UnaryOperator(input), attr_indexes(attr_indexes), has_next(false) {
+                // TODO: Add your implementation here
+            }
+
+        ~ProjectOperator() = default;
+
+        void open() override {
+            // TODO: Add your implementation here
+            input->open();
+            has_next = false;
+            current_output.clear();
+        }
+
+        bool next() override {
+            // TODO: Add your implementation here
+            if (input->next()) {
+                const auto output = input->get_output();
+                current_output.clear();
+                for (const auto& ind: attr_indexes) {
+                    current_output.push_back(output[ind]->clone());
+                }
+                has_next = true;
+                return true;
+            }
+            has_next = false;
+            current_output.clear();
+            return false;
+        }
+
+        void close() override {
+            // TODO: Add your implementation here
+            input->close();
+            has_next = false;
+            current_output.clear();
+        }
+
+        std::vector<std::unique_ptr<Field>> get_output() override {
+            // TODO: Add your implementation here
+            if (has_next) {
+                std::vector<std::unique_ptr<Field>> output_copy;
+                for (const auto& field : current_output) {
+                    output_copy.push_back(field->clone());
+                }
+                return output_copy;
+            } else {
+                return {};
+            }
+        }
+};
+
 enum class AggrFuncType { COUNT, MAX, MIN, SUM };
 
 struct AggrFunc {
@@ -1748,6 +1807,7 @@ void execute_query(const QueryComponents& components,
     // Buffer for optional operators to ensure lifetime
     std::optional<SelectOperator> select_op_buffer;
     std::optional<HashAggregationOperator> hash_agg_op_buffer;
+    std::optional<ProjectOperator> project_op_buffer;
 
     // Apply WHERE conditions
     if (components.where_attribute_index != -1) {
@@ -1788,6 +1848,10 @@ void execute_query(const QueryComponents& components,
         hash_agg_op_buffer.emplace(*root_op, group_by_attrs, aggr_funcs);
         root_op = &*hash_agg_op_buffer;
     }
+
+    std::vector<size_t> attr_indexes = std::vector<size_t>(components.select_attributes.begin(), components.select_attributes.end());
+    project_op_buffer.emplace(*root_op, attr_indexes);
+    root_op = &*project_op_buffer;
 
     // Execute the Root Operator
     root_op->open();
