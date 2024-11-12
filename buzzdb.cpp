@@ -1044,7 +1044,6 @@ public:
 
 class ProjectOperator : public UnaryOperator {
     private:
-        // TODO: Add your implementation here
         std::vector<size_t> attr_indexes;
         bool has_next;
         std::vector<std::unique_ptr<Field>> current_output;
@@ -1052,20 +1051,17 @@ class ProjectOperator : public UnaryOperator {
     public:
         ProjectOperator(Operator& input, std::vector<size_t> attr_indexes)
             : UnaryOperator(input), attr_indexes(attr_indexes), has_next(false) {
-                // TODO: Add your implementation here
             }
 
         ~ProjectOperator() = default;
 
         void open() override {
-            // TODO: Add your implementation here
             input->open();
             has_next = false;
             current_output.clear();
         }
 
         bool next() override {
-            // TODO: Add your implementation here
             if (input->next()) {
                 const auto output = input->get_output();
                 current_output.clear();
@@ -1081,14 +1077,12 @@ class ProjectOperator : public UnaryOperator {
         }
 
         void close() override {
-            // TODO: Add your implementation here
             input->close();
             has_next = false;
             current_output.clear();
         }
 
         std::vector<std::unique_ptr<Field>> get_output() override {
-            // TODO: Add your implementation here
             if (has_next) {
                 std::vector<std::unique_ptr<Field>> output_copy;
                 for (const auto& field : current_output) {
