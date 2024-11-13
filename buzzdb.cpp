@@ -13,7 +13,6 @@
 #include <memory>
 #include <sstream>
 #include <limits>
-#include <optional>
 #include <regex>
 #include <stdexcept>
 
@@ -750,22 +749,22 @@ class Operator {
 
 class UnaryOperator : public Operator {
     protected:
-    Operator* input;
+    std::unique_ptr<Operator> input;
 
     public:
-    explicit UnaryOperator(Operator& input) : input(&input) {}
+    explicit UnaryOperator(std::unique_ptr<Operator> input) : input(std::move(input)) {}
 
     ~UnaryOperator() override = default;
 };
 
 class BinaryOperator : public Operator {
     protected:
-    Operator* input_left;
-    Operator* input_right;
+    std::unique_ptr<Operator> input_left;
+    std::unique_ptr<Operator> input_right;
 
     public:
-    explicit BinaryOperator(Operator& input_left, Operator& input_right)
-        : input_left(&input_left), input_right(&input_right) {}
+    explicit BinaryOperator(std::unique_ptr<Operator> input_left, std::unique_ptr<Operator> input_right)
+        : input_left(std::move(input_left)), input_right(std::move(input_right)) {}
 
     ~BinaryOperator() override = default;
 };
@@ -994,8 +993,8 @@ private:
     std::vector<std::unique_ptr<Field>> current_output; // Store the current output here
 
 public:
-    SelectOperator(Operator& input, std::unique_ptr<IPredicate> predicate)
-        : UnaryOperator(input), predicate(std::move(predicate)), has_next(false) {}
+    SelectOperator(std::unique_ptr<Operator> input, std::unique_ptr<IPredicate> predicate)
+        : UnaryOperator(std::move(input)), predicate(std::move(predicate)), has_next(false) {}
 
     void open() override {
         input->open();
@@ -1049,8 +1048,8 @@ class ProjectOperator : public UnaryOperator {
         std::vector<std::unique_ptr<Field>> current_output;
 
     public:
-        ProjectOperator(Operator& input, std::vector<size_t> attr_indexes)
-            : UnaryOperator(input), attr_indexes(attr_indexes), has_next(false) {
+        ProjectOperator(std::unique_ptr<Operator> input, std::vector<size_t> attr_indexes)
+            : UnaryOperator(std::move(input)), attr_indexes(attr_indexes), has_next(false) {
             }
 
         ~ProjectOperator() = default;
@@ -1149,8 +1148,8 @@ private:
 
 
 public:
-    HashAggregationOperator(Operator& input, std::vector<size_t> group_by_attrs, std::vector<AggrFunc> aggr_funcs)
-        : UnaryOperator(input), group_by_attrs(group_by_attrs), aggr_funcs(aggr_funcs) {}
+    HashAggregationOperator(std::unique_ptr<Operator> input, std::vector<size_t> group_by_attrs, std::vector<AggrFunc> aggr_funcs)
+        : UnaryOperator(std::move(input)), group_by_attrs(group_by_attrs), aggr_funcs(aggr_funcs) {}
 
     void open() override {
         input->open(); // Ensure the input operator is opened
@@ -1291,26 +1290,118 @@ private:
 
 };
 
-class InsertOperator : public Operator {
+class ValueOperator : public Operator {
 private:
-    BufferManager& buffer_manager;
-    TableID table_id;
-    std::unique_ptr<Tuple> tuple_to_insert;
+    std::unique_ptr<Tuple> value_tuple;
+    size_t num_times;
+
+    size_t num_times_remaining;
+    bool has_output;
 
 public:
-    InsertOperator(BufferManager& manager, TableID table_id) : buffer_manager(manager), table_id(table_id) {}
-
-    // Set the tuple to be inserted by this operator.
-    void set_tuple_to_insert(std::unique_ptr<Tuple> tuple) {
-        tuple_to_insert = std::move(tuple);
-    }
+    ValueOperator(std::unique_ptr<Tuple> value_tuple) : value_tuple(std::move(value_tuple)), num_times(1) {}
+    ValueOperator(std::unique_ptr<Tuple> value_tuple, size_t num_times) : value_tuple(std::move(value_tuple)), num_times(num_times) {}
 
     void open() override {
-        // Not used in this context
+        num_times_remaining = num_times;
+        has_output = false;
     }
 
     bool next() override {
-        if (!tuple_to_insert) return false; // No tuple to insert
+        std::cout << "here0\n";
+        if (num_times_remaining == 0) {
+            std::cout << "here1\n";
+            has_output = false;
+            return false;
+        }
+        std::cout << "here2\n";
+        num_times_remaining--;
+        has_output = true;
+        return true;
+    }
+
+    void close() override {
+        num_times_remaining = num_times;
+        has_output = false;
+    }
+
+    std::vector<std::unique_ptr<Field>> get_output() override {
+        if (has_output) {
+            std::cout << "here3\n";
+            std::vector<std::unique_ptr<Field>> output_copy;
+            for (auto& field : value_tuple->fields) {
+                output_copy.push_back(field->clone());
+                output_copy.back()->print();
+                std::cout << std::endl;
+            }
+            return output_copy;
+        }
+        return {};
+    }
+};
+
+class ValuesIteratorOperator : public Operator {
+private:
+    std::vector<std::unique_ptr<Tuple>> value_tuples;
+
+    int curr_count;
+    bool has_output;
+
+public:
+    ValuesIteratorOperator(std::vector<std::unique_ptr<Tuple>>&& value_tuples) : value_tuples(std::move(value_tuples)) {}
+
+    void open() override {
+        curr_count = 0;
+        has_output = false;
+    }
+
+    bool next() override {
+        if (curr_count >= value_tuples.size()) {
+            has_output = false;
+            return false;
+        }
+        curr_count++;
+        has_output = true;
+        return true;
+    }
+
+    void close() override {
+        curr_count = 0;
+        has_output = false;
+    }
+
+    std::vector<std::unique_ptr<Field>> get_output() override {
+        if (has_output) {
+            std::vector<std::unique_ptr<Field>> output_copy;
+            for (auto& field : value_tuples[curr_count - 1]->fields) {
+                output_copy.push_back(field->clone());
+            }
+            return output_copy;
+        }
+        return {};
+    }
+};
+
+class InsertOperator : public UnaryOperator {
+private:
+    BufferManager& buffer_manager;
+    TableID table_id;
+
+public:
+    InsertOperator(std::unique_ptr<Operator> input, BufferManager& manager, TableID table_id)
+        : UnaryOperator(std::move(input)), buffer_manager(manager), table_id(table_id) {}
+
+    void open() override {
+        input->open();
+    }
+
+    bool next() override {
+        if (!input->next()) return false; // No tuple to insert
+
+        std::unique_ptr<Tuple> tuple_to_insert = std::make_unique<Tuple>();
+        for (auto& field : input->get_output()) {
+            tuple_to_insert->add_field(field->clone());
+        }
 
         for (size_t page_id = 0; page_id < buffer_manager.get_num_pages(table_id); ++page_id) {
             auto& page = buffer_manager.get_page(table_id, page_id);
@@ -1334,7 +1425,7 @@ public:
     }
 
     void close() override {
-        // Not used in this context
+        input->close();
     }
 
     std::vector<std::unique_ptr<Field>> get_output() override {
@@ -1545,8 +1636,9 @@ public:
             SimplePredicate::Operand(std::make_unique<Field>(name)),
             SimplePredicate::ComparisonOperator::EQ
         );
-        ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-        SelectOperator select_op(scan_op, std::move(table_name_equality_predicate));
+        std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+        SelectOperator select_op(std::move(scan_op), std::move(table_name_equality_predicate));
+        select_op.open();
         while (select_op.next()) {
             auto tuple = select_op.get_output();
             TableID table_id = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("id")]->as_int();
@@ -1594,8 +1686,9 @@ public:
                 SimplePredicate::Operand(std::make_unique<Field>(table_id)),
                 SimplePredicate::ComparisonOperator::EQ
             );
-            ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-            SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
+            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+            SelectOperator select_op(std::move(scan_op), std::move(table_id_equality_predicate));
+            select_op.open();
             while (select_op.next()) {
                 auto tuple = select_op.get_output();
                 std::string name = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("name")]->as_string();
@@ -1615,8 +1708,9 @@ public:
                 SimplePredicate::Operand(std::make_unique<Field>(table_id)),
                 SimplePredicate::ComparisonOperator::EQ
             );
-            ScanOperator scan_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
-            SelectOperator select_op(scan_op, std::move(table_id_equality_predicate));
+            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
+            SelectOperator select_op(std::move(scan_op), std::move(table_id_equality_predicate));
+            select_op.open();
             while (select_op.next()) {
                 auto tuple = select_op.get_output();
                 std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
@@ -1650,8 +1744,8 @@ public:
                 SimplePredicate::ComparisonOperator::EQ
             );
 
-            ScanOperator scan_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-            SelectOperator select_op(scan_op, std::move(table_name_equality_predicate));
+            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+            SelectOperator select_op(std::move(scan_op), std::move(table_name_equality_predicate));
             while (select_op.next()) {
                 std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
                 return false;
@@ -1660,24 +1754,26 @@ public:
 
         TableID table_id = next_table_id++;
 
-        // Insert table id and name in system_class
-        InsertOperator insert_system_class_op(buffer_manager, SYSTEM_CLASS_TABLE_ID);
+        // Insert table id and name in system_class        
         std::unique_ptr<Tuple> system_class_tuple = std::make_unique<Tuple>();
         system_class_tuple->add_field(std::make_unique<Field>(table_id));
         system_class_tuple->add_field(std::make_unique<Field>(table_schema->name));
-        insert_system_class_op.set_tuple_to_insert(std::move(system_class_tuple));
+        std::unique_ptr<ValueOperator> new_system_class_tuple_op = std::make_unique<ValueOperator>(std::move(system_class_tuple));
+        InsertOperator insert_system_class_op(std::move(new_system_class_tuple_op), buffer_manager, SYSTEM_CLASS_TABLE_ID);
+        insert_system_class_op.open();
         bool insert_system_class_res = insert_system_class_op.next();
         assert(insert_system_class_res == true);
 
         // Insert table columns in system_column
-        InsertOperator insert_system_column_op(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
         for (auto& column : table_schema->columns) {
             std::unique_ptr<Tuple> system_column_tuple = std::make_unique<Tuple>();
             system_column_tuple->add_field(std::make_unique<Field>(table_id));
             system_column_tuple->add_field(std::make_unique<Field>(column->name));
             system_column_tuple->add_field(std::make_unique<Field>(column->idx));
             system_column_tuple->add_field(std::make_unique<Field>(column->type));
-            insert_system_column_op.set_tuple_to_insert(std::move(system_column_tuple));
+            std::unique_ptr<ValueOperator> new_system_column_tuple_op = std::make_unique<ValueOperator>(std::move(system_column_tuple));
+            InsertOperator insert_system_column_op(std::move(new_system_column_tuple_op), buffer_manager, SYSTEM_COLUMN_TABLE_ID);
+            insert_system_column_op.open();
             bool insert_system_column_res = insert_system_column_op.next();
             assert(insert_system_column_res == true);
         }
@@ -1688,23 +1784,26 @@ public:
 };
 
 struct QueryComponents {
-    // Projection attributes
+    enum class QueryType {
+        SELECT,
+        INSERT
+    };
+    QueryType type;
+
+    // Common components
+    TableID table_id;
+
+    // SELECT components
     std::vector<size_t> select_attributes;
     
-    // Table info
-    TableID table_id;
-    
-    // Aggregation
     struct AggregateInfo {
         AggrFuncType func_type;
         size_t attribute_index;
     };
     std::vector<AggregateInfo> aggregates;
     
-    // Group by
     std::vector<size_t> group_by_attributes;
     
-    // Where conditions
     struct WhereCondition {
         size_t attribute_index;
         SimplePredicate::ComparisonOperator op;
@@ -1712,71 +1811,171 @@ struct QueryComponents {
     };
     std::vector<WhereCondition> where_conditions;
     
-    // Having conditions
     struct HavingCondition {
-        size_t aggregate_index; // Index into aggregates vector
+        size_t aggregate_index;
         SimplePredicate::ComparisonOperator op;
         std::unique_ptr<Field> value;
     };
     std::vector<HavingCondition> having_conditions;
+
+    // INSERT components
+    std::vector<std::string> insert_columns;
+    std::vector<std::vector<std::unique_ptr<Field>>> insert_values;
+    std::unique_ptr<QueryComponents> insert_select_query;
 };
 
 QueryComponents parse_query(TableManager& table_manager, const std::string& query) {
     QueryComponents components;
 
-    // Parse table name
-    std::regex table_regex("FROM (\\w+)");
-    std::smatch table_match;
-    if (std::regex_search(query, table_match, table_regex)) {
-        std::string table_name = table_match[1].str();
-        components.table_id = table_manager.get_table_id(table_name);
-    } else {
-        throw std::invalid_argument("Could not find table name in query");
-    }
+    // Determine query type
+    if (query.substr(0, 6) == "SELECT") {
+        components.type = QueryComponents::QueryType::SELECT;
+        std::regex table_regex("FROM (\\w+)");
+        std::smatch table_match;
+        if (std::regex_search(query, table_match, table_regex)) {
+            std::string table_name = table_match[1].str();
+            components.table_id = table_manager.get_table_id(table_name);
+        } else {
+            throw std::invalid_argument("Could not find table name in query");
+        }
 
-    auto table_schema = table_manager.get_table_schema(components.table_id);
-    std::regex delimiter_regex(", ");
+        auto table_schema = table_manager.get_table_schema(components.table_id);
+        std::regex delimiter_regex(", ");
 
-    // Parse GROUP BY
-    std::regex group_by_regex("GROUP BY (\\w+(?:, \\w+)*)");
-    std::smatch group_by_match;
-    if (std::regex_search(query, group_by_match, group_by_regex)) {
-        if (!group_by_match[1].str().empty()) {
-            std::string match = group_by_match[1].str();
+        // Parse GROUP BY
+        std::regex group_by_regex("GROUP BY (\\w+(?:, \\w+)*)");
+        std::smatch group_by_match;
+        if (std::regex_search(query, group_by_match, group_by_regex)) {
+            if (!group_by_match[1].str().empty()) {
+                std::string match = group_by_match[1].str();
+                std::sregex_token_iterator begin(match.begin(), match.end(), delimiter_regex, -1);
+                std::sregex_token_iterator end;
+                for (auto it = begin; it != end; ++it) {
+                    std::string item = it->str();
+
+                    size_t column_idx = table_schema->find_column_idx(item);
+                    if (column_idx == INVALID_VALUE) {
+                        throw std::invalid_argument("Column not found: " + item);
+                    }
+                    components.group_by_attributes.push_back(column_idx);
+                }
+            }
+        }
+
+        // Parse SELECT clause
+        std::regex select_regex("SELECT ((?:\\w+\\(\\w+\\)|\\w+|\\*)(?:, (?:\\w+\\(\\w+\\)|\\w+|\\*))*)");
+        std::regex agg_regex("(\\w+)\\((\\w+)\\)");
+        std::smatch select_matches;
+        std::string::const_iterator query_start(query.cbegin());
+        if (std::regex_search(query_start, query.cend(), select_matches, select_regex) && !select_matches[1].str().empty()) {
+            std::string match = select_matches[1].str();
             std::sregex_token_iterator begin(match.begin(), match.end(), delimiter_regex, -1);
             std::sregex_token_iterator end;
+
+            std::vector<std::pair<size_t, size_t>> column_ref_idxs;
             for (auto it = begin; it != end; ++it) {
                 std::string item = it->str();
 
-                size_t column_idx = table_schema->find_column_idx(item);
-                if (column_idx == INVALID_VALUE) {
-                    throw std::invalid_argument("Column not found: " + item);
+                // Check if it's an aggregate function
+                std::smatch agg_match;
+                if (std::regex_match(item, agg_match, agg_regex)) {
+                    std::string func_name = agg_match[1].str();
+                    std::string col_name = agg_match[2].str();
+
+                    size_t column_idx = table_schema->find_column_idx(col_name);
+                    if (column_idx == INVALID_VALUE) {
+                        throw std::invalid_argument("Column not found: " + col_name);
+                    }
+
+                    AggrFuncType func_type;
+                    if (func_name == "SUM") func_type = AggrFuncType::SUM;
+                    else if (func_name == "COUNT") func_type = AggrFuncType::COUNT;
+                    else if (func_name == "MIN") func_type = AggrFuncType::MIN;
+                    else if (func_name == "MAX") func_type = AggrFuncType::MAX;
+                    else throw std::invalid_argument("Unknown aggregate function: " + func_name);
+
+                    components.aggregates.push_back({func_type, column_idx});
+                } else if (item == "*") {
+                    // All columns
+                    if (components.group_by_attributes.size() != 0 && table_schema->columns.size() != components.group_by_attributes.size()) {
+                        throw std::invalid_argument("* is invalid in the select list because not all columns are contained in the GROUP BY clause.");
+                    }
+                    for (size_t column_idx = 0; column_idx < table_schema->columns.size(); column_idx++) {
+                        column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                    }
+                } else {
+                    // Regular column reference
+                    size_t column_idx = table_schema->find_column_idx(item);
+                    if (components.group_by_attributes.size() != 0 && std::find(components.group_by_attributes.begin(), components.group_by_attributes.end(), column_idx) == components.group_by_attributes.end()) {
+                        throw std::invalid_argument(item + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
+                    }
+                    if (column_idx == INVALID_VALUE) {
+                        throw std::invalid_argument("Column not found: " + item);
+                    }
+                    column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
                 }
-                components.group_by_attributes.push_back(column_idx);
+            }
+
+            size_t i = 0;
+            size_t j = 0;
+            for (size_t k = 0; k < column_ref_idxs.size() + components.aggregates.size(); k++) {
+                if (i < column_ref_idxs.size() && column_ref_idxs[i].second == k) {
+                    components.select_attributes.push_back(column_ref_idxs[i].first);
+                    i++;
+                } else {
+                    components.select_attributes.push_back(components.group_by_attributes.size() + j);
+                    j++;
+                }
             }
         }
-    }
 
-    // Parse SELECT clause
-    std::regex select_regex("SELECT ((?:\\w+\\(\\w+\\)|\\w+|\\*)(?:, (?:\\w+\\(\\w+\\)|\\w+|\\*))*)");
-    std::regex agg_regex("(\\w+)\\((\\w+)\\)");
-    std::smatch select_matches;
-    std::string::const_iterator query_start(query.cbegin());
-    if (std::regex_search(query_start, query.cend(), select_matches, select_regex) && !select_matches[1].str().empty()) {
-        std::string match = select_matches[1].str();
-        std::sregex_token_iterator begin(match.begin(), match.end(), delimiter_regex, -1);
-        std::sregex_token_iterator end;
+        // Parse WHERE conditions
+        std::regex where_regex("WHERE (\\w+ [<>=]+ \\d+(?: AND \\w+ [<>=]+ \\d+)*)");
+        std::smatch where_matches;
+        if (std::regex_search(query, where_matches, where_regex) && !where_matches[1].str().empty()) {
+            std::string where_clause = where_matches[1].str();
+            std::regex cond_regex("(\\w+) ([<>=]+) (\\d+)");
+            std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
+            std::sregex_iterator end;
 
-        std::vector<std::pair<size_t, size_t>> column_ref_idxs;
-        for (auto it = begin; it != end; ++it) {
-            std::string item = it->str();
+            for (auto it = begin; it != end; ++it) {
+                std::string col_name = (*it)[1].str();
+                size_t column_idx = table_schema->find_column_idx(col_name);
+                if (column_idx == INVALID_VALUE) {
+                    throw std::invalid_argument("Column not found: " + col_name);
+                }
 
-            // Check if it's an aggregate function
-            std::smatch agg_match;
-            if (std::regex_match(item, agg_match, agg_regex)) {
-                std::string func_name = agg_match[1].str();
-                std::string col_name = agg_match[2].str();
+                std::string op_str = (*it)[2].str();
+                int value = std::stoi((*it)[3].str());
 
+                SimplePredicate::ComparisonOperator op;
+                if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
+                else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
+                else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
+                else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
+                else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
+                else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
+
+                components.where_conditions.push_back({
+                    column_idx,
+                    op,
+                    std::make_unique<Field>(value)
+                });
+            }
+        }
+
+        // Parse HAVING conditions
+        std::regex having_regex("HAVING (\\w+\\(\\w+\\) [<>=]+ \\d+(?: AND \\w+\\(\\w+\\) [<>=]+ \\d+)*)");
+        std::smatch having_matches;
+        if (std::regex_search(query, having_matches, having_regex) && !having_matches[1].str().empty()) {
+            std::string having_clause = having_matches[1].str();
+            std::regex cond_regex("(\\w+)\\((\\w+)\\) ([<>=]+) (\\d+)");
+            std::sregex_iterator begin(having_clause.begin(), having_clause.end(), cond_regex);
+            std::sregex_iterator end;
+
+            for (auto it = begin; it != end; ++it) {
+                std::string func_name = (*it)[1].str();
+                std::string col_name = (*it)[2].str();
                 size_t column_idx = table_schema->find_column_idx(col_name);
                 if (column_idx == INVALID_VALUE) {
                     throw std::invalid_argument("Column not found: " + col_name);
@@ -1789,190 +1988,201 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 else if (func_name == "MAX") func_type = AggrFuncType::MAX;
                 else throw std::invalid_argument("Unknown aggregate function: " + func_name);
 
+                std::string op_str = (*it)[3].str();
+                int value = std::stoi((*it)[4].str());
+
+                SimplePredicate::ComparisonOperator op;
+                if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
+                else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
+                else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
+                else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
+                else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
+                else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
+
                 components.aggregates.push_back({func_type, column_idx});
-            } else if (item == "*") {
-                // All columns
-                if (components.group_by_attributes.size() != 0 && table_schema->columns.size() != components.group_by_attributes.size()) {
-                    throw std::invalid_argument("* is invalid in the select list because not all columns are contained in the GROUP BY clause.");
+
+                components.having_conditions.push_back({
+                    components.aggregates.size() - 1,
+                    op,
+                    std::make_unique<Field>(value)
+                });
+            }
+        }
+    } else if (query.substr(0, 6) == "INSERT") {
+        components.type = QueryComponents::QueryType::INSERT;
+        
+        // Parse INSERT query
+        std::regex insert_regex("INSERT INTO (\\w+)(?:\\s*\\(((?:\\w+(?:,\\s*\\w+)*)*)\\))?\\s*(VALUES\\s*\\((.*?)\\)(?:\\s*,\\s*\\((.*?)\\))*|SELECT .*)");
+        std::smatch insert_match;
+        
+        if (std::regex_search(query, insert_match, insert_regex)) {
+            // Get table name
+            std::string table_name = insert_match[1].str();
+            components.table_id = table_manager.get_table_id(table_name);
+            auto table_schema = table_manager.get_table_schema(components.table_id);
+
+            // Parse column names if specified
+            if (insert_match[2].matched) {
+                std::string cols = insert_match[2].str();
+                std::regex col_regex("\\w+");
+                std::sregex_iterator col_begin(cols.begin(), cols.end(), col_regex);
+                std::sregex_iterator col_end;
+                for (auto it = col_begin; it != col_end; ++it) {
+                    components.insert_columns.push_back(it->str());
                 }
-                for (size_t column_idx = 0; column_idx < table_schema->columns.size(); column_idx++) {
-                    column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+            }
+
+            if (insert_match[3].str().substr(0, 6) == "VALUES") {
+                // Parse VALUES
+                std::string values_str = insert_match[0].str();
+                std::regex value_regex("\\((.*?)\\)");
+                std::sregex_iterator value_begin(values_str.begin(), values_str.end(), value_regex);
+                std::sregex_iterator value_end;
+
+                for (auto it = value_begin; it != value_end; ++it) {
+                    std::string tuple_values = (*it)[1].str();
+                    std::regex field_regex("([^,]+)");
+                    std::sregex_iterator field_begin(tuple_values.begin(), tuple_values.end(), field_regex);
+                    std::sregex_iterator field_end;
+
+                    std::vector<std::unique_ptr<Field>> tuple_fields;
+                    size_t field_idx = 0;
+                    for (auto field_it = field_begin; field_it != field_end; ++field_it, ++field_idx) {
+                        std::string value = field_it->str();
+                        // Trim whitespace
+                        value.erase(0, value.find_first_not_of(" \t"));
+                        value.erase(value.find_last_not_of(" \t") + 1);
+
+                        FieldType field_type;
+                        auto& columns = table_schema->columns;
+
+                        // TODO: Add validation and reordering for queries of type INSERT INTO <table_name> (<col1>, <col2>) ...
+                        // if (components.insert_columns.empty()) {
+                        field_type = std::next(columns.begin(), field_idx)->get()->type;
+                        // } else {
+                        //     size_t column_idx = table_schema->find_column_idx(components.insert_columns[field_idx]);
+                        //     field_type = std::next(columns.begin(), column_idx)->get()->type;
+                        // }
+
+                        switch (field_type) {
+                            case FieldType::INT:
+                                tuple_fields.push_back(std::make_unique<Field>(std::stoi(value)));
+                                break;
+                            case FieldType::FLOAT:
+                                tuple_fields.push_back(std::make_unique<Field>(std::stof(value)));
+                                break;
+                            case FieldType::STRING:
+                                // Remove quotes if present
+                                if (value.front() == '"' || value.front() == '\'') {
+                                    value = value.substr(1, value.length() - 2);
+                                }
+                                tuple_fields.push_back(std::make_unique<Field>(value));
+                                break;
+                        }
+                    }
+                    if (tuple_fields.size() != table_schema->columns.size()) {
+                        throw std::invalid_argument("Size of new tuple does not match the number of columns in schema");
+                    }
+                    components.insert_values.push_back(std::move(tuple_fields));
                 }
             } else {
-                // Regular column reference
-                size_t column_idx = table_schema->find_column_idx(item);
-                if (components.group_by_attributes.size() != 0 && std::find(components.group_by_attributes.begin(), components.group_by_attributes.end(), column_idx) == components.group_by_attributes.end()) {
-                    throw std::invalid_argument(item + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
-                }
-                if (column_idx == INVALID_VALUE) {
-                    throw std::invalid_argument("Column not found: " + item);
-                }
-                column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                // Parse SELECT
+                std::string select_query = query.substr(query.find("SELECT"));
+                components.insert_select_query = std::make_unique<QueryComponents>(parse_query(table_manager, select_query));
             }
+        } else {
+            throw std::invalid_argument("Invalid INSERT query syntax");
         }
-
-        size_t i = 0;
-        size_t j = 0;
-        for (size_t k = 0; k < column_ref_idxs.size() + components.aggregates.size(); k++) {
-            if (i < column_ref_idxs.size() && column_ref_idxs[i].second == k) {
-                components.select_attributes.push_back(column_ref_idxs[i].first);
-                i++;
-            } else {
-                components.select_attributes.push_back(components.group_by_attributes.size() + j);
-                j++;
-            }
-        }
-    }
-
-    // Parse WHERE conditions
-    std::regex where_regex("WHERE (\\w+ [<>=]+ \\d+(?: AND \\w+ [<>=]+ \\d+)*)");
-    std::smatch where_matches;
-    if (std::regex_search(query, where_matches, where_regex) && !where_matches[1].str().empty()) {
-        std::string where_clause = where_matches[1].str();
-        std::regex cond_regex("(\\w+) ([<>=]+) (\\d+)");
-        std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
-        std::sregex_iterator end;
-        
-        for (auto it = begin; it != end; ++it) {
-            std::string col_name = (*it)[1].str();
-            size_t column_idx = table_schema->find_column_idx(col_name);
-            if (column_idx == INVALID_VALUE) {
-                throw std::invalid_argument("Column not found: " + col_name);
-            }
-            
-            std::string op_str = (*it)[2].str();
-            int value = std::stoi((*it)[3].str());
-            
-            SimplePredicate::ComparisonOperator op;
-            if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
-            else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
-            else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
-            else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
-            else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
-            else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
-            
-            components.where_conditions.push_back({
-                column_idx,
-                op,
-                std::make_unique<Field>(value)
-            });
-        }
-    }
-
-    // Parse HAVING conditions
-    std::regex having_regex("HAVING (\\w+\\(\\w+\\) [<>=]+ \\d+(?: AND \\w+\\(\\w+\\) [<>=]+ \\d+)*)");
-    std::smatch having_matches;
-    if (std::regex_search(query, having_matches, having_regex) && !having_matches[1].str().empty()) {
-        std::string having_clause = having_matches[1].str();
-        std::regex cond_regex("(\\w+)\\((\\w+)\\) ([<>=]+) (\\d+)");
-        std::sregex_iterator begin(having_clause.begin(), having_clause.end(), cond_regex);
-        std::sregex_iterator end;
-        
-        for (auto it = begin; it != end; ++it) {
-            std::string func_name = (*it)[1].str();
-            std::string col_name = (*it)[2].str();
-            size_t column_idx = table_schema->find_column_idx(col_name);
-            if (column_idx == INVALID_VALUE) {
-                throw std::invalid_argument("Column not found: " + col_name);
-            }
-
-            AggrFuncType func_type;
-            if (func_name == "SUM") func_type = AggrFuncType::SUM;
-            else if (func_name == "COUNT") func_type = AggrFuncType::COUNT;
-            else if (func_name == "MIN") func_type = AggrFuncType::MIN;
-            else if (func_name == "MAX") func_type = AggrFuncType::MAX;
-            else throw std::invalid_argument("Unknown aggregate function: " + func_name);
-            
-            std::string op_str = (*it)[3].str();
-            int value = std::stoi((*it)[4].str());
-            
-            SimplePredicate::ComparisonOperator op;
-            if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
-            else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
-            else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
-            else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
-            else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
-            else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
-
-            components.aggregates.push_back({func_type, column_idx});
-            
-            components.having_conditions.push_back({
-                components.aggregates.size() - 1,
-                op,
-                std::make_unique<Field>(value)
-            });
-        }
+    } else {
+        throw std::invalid_argument("Invalid query type provided");
     }
 
     return components;
 }
 
-void execute_query(const QueryComponents& components, BufferManager& buffer_manager) {
-    // Start with scan
-    ScanOperator scan_op(buffer_manager, components.table_id);
-    Operator* current_op = &scan_op;
+std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferManager& buffer_manager) {
+    if (components.type == QueryComponents::QueryType::SELECT) {
+        // Start with scan
+        std::unique_ptr<Operator> current_op = std::make_unique<ScanOperator>(buffer_manager, components.table_id);
 
-    // Optional operators
-    std::optional<SelectOperator> select_op;
-    std::optional<HashAggregationOperator> agg_op;
-    std::optional<SelectOperator> having_op;
-    std::optional<ProjectOperator> project_op;
-
-    // Add WHERE conditions if any
-    if (!components.where_conditions.empty()) {
-        auto complex_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-        for (const auto& cond : components.where_conditions) {
-            auto simple_pred = std::make_unique<SimplePredicate>(
-                SimplePredicate::Operand(cond.attribute_index),
-                SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
-                cond.op
-            );
-            complex_pred->add_predicate(std::move(simple_pred));
-        }
-        select_op.emplace(*current_op, std::move(complex_pred));
-        current_op = &*select_op;
-    }
-
-    // Add aggregation if needed
-    if (!components.aggregates.empty() || !components.group_by_attributes.empty()) {
-        std::vector<AggrFunc> aggr_funcs;
-        for (const auto& agg : components.aggregates) {
-            aggr_funcs.push_back({agg.func_type, agg.attribute_index});
-        }
-        agg_op.emplace(*current_op, components.group_by_attributes, aggr_funcs);
-        current_op = &*agg_op;
-
-        // Add HAVING if needed
-        if (!components.having_conditions.empty()) {
-            auto having_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-            for (const auto& cond : components.having_conditions) {
+        // Add WHERE conditions if any
+        if (!components.where_conditions.empty()) {
+            auto complex_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+            for (const auto& cond : components.where_conditions) {
                 auto simple_pred = std::make_unique<SimplePredicate>(
-                    SimplePredicate::Operand(components.group_by_attributes.size() + cond.aggregate_index),
+                    SimplePredicate::Operand(cond.attribute_index),
                     SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
                     cond.op
                 );
-                having_pred->add_predicate(std::move(simple_pred));
+                complex_pred->add_predicate(std::move(simple_pred));
             }
-            having_op.emplace(*current_op, std::move(having_pred));
-            current_op = &*having_op;
+            current_op = std::make_unique<SelectOperator>(std::move(current_op), std::move(complex_pred));
         }
+
+        // Add aggregation if needed
+        if (!components.aggregates.empty() || !components.group_by_attributes.empty()) {
+            std::vector<AggrFunc> aggr_funcs;
+            for (const auto& agg : components.aggregates) {
+                aggr_funcs.push_back({agg.func_type, agg.attribute_index});
+            }
+            current_op = std::make_unique<HashAggregationOperator>(std::move(current_op), components.group_by_attributes, aggr_funcs);
+
+            // Add HAVING if needed
+            if (!components.having_conditions.empty()) {
+                auto having_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+                for (const auto& cond : components.having_conditions) {
+                    auto simple_pred = std::make_unique<SimplePredicate>(
+                        SimplePredicate::Operand(components.group_by_attributes.size() + cond.aggregate_index),
+                        SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
+                        cond.op
+                    );
+                    having_pred->add_predicate(std::move(simple_pred));
+                }
+                current_op = std::make_unique<SelectOperator>(std::move(current_op), std::move(having_pred));
+            }
+        }
+
+        // Add final projection
+        current_op = std::make_unique<ProjectOperator>(std::move(current_op), components.select_attributes);
+        return current_op;
+    } else {
+        // Execute INSERT
+        std::unique_ptr<Operator> current_op;
+
+        if (components.insert_select_query) {
+            // INSERT from SELECT
+            std::unique_ptr<Operator> select_query_op = plan_query(*components.insert_select_query, buffer_manager);
+            current_op = std::make_unique<InsertOperator>(std::move(select_query_op), buffer_manager, components.table_id);
+        } else {
+            // INSERT from VALUES
+            std::vector<std::unique_ptr<Tuple>> tuples_to_insert;
+            for (auto& tuple_fields : components.insert_values) {
+                auto tuple = std::make_unique<Tuple>();
+                for (auto& field : tuple_fields) {
+                    tuple->add_field(field->clone());
+                }
+                tuples_to_insert.push_back(std::move(tuple));
+            }
+            std::unique_ptr<ValuesIteratorOperator> values_op = std::make_unique<ValuesIteratorOperator>(std::move(tuples_to_insert));
+            current_op = std::make_unique<InsertOperator>(std::move(values_op), buffer_manager, components.table_id);
+        }
+        return current_op;
     }
+}
 
-    // Add final projection
-    project_op.emplace(*current_op, components.select_attributes);
-    current_op = &*project_op;
-
+void execute_query(const QueryComponents& components, BufferManager& buffer_manager) {
+    std::unique_ptr<Operator> root_op = plan_query(components, buffer_manager);
     // Execute query
-    current_op->open();
-    while (current_op->next()) {
-        const auto& output = current_op->get_output();
+    root_op->open();
+    while (root_op->next()) {
+        const auto& output = root_op->get_output();
         for (const auto& field : output) {
             field->print();
             std::cout << " ";
         }
         std::cout << std::endl;
     }
-    current_op->close();
+    root_op->close();
     std::cout << std::endl;
 }
 
@@ -2049,18 +2259,28 @@ public:
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
-            "SELECT id, name FROM system_class",
-            "SELECT name FROM system_class",
-            "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
-            "SELECT table_id, name, idx, data_type, * FROM system_column",
-            "SELECT * FROM system_column",
-            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
-            "SELECT id, name FROM system_class WHERE id <> 1",
-            "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
-            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
+            "SELECT * FROM test_table_2",
+            "SELECT * FROM system_class",
+            "INSERT INTO test_table_2 SELECT * FROM system_class",
+            "INSERT INTO system_class SELECT * FROM test_table_2",
+            "SELECT * FROM test_table_2",
+            "SELECT * FROM system_class",
+            // "INSERT INTO system_class VALUES (5, 'hello')",
+            // "INSERT INTO system_class VALUES (5, 'hello'), (6, 'bye'), (7, 'yo')",
+            // // "INSERT INTO system_class VALUES (8, 'hello'), (9, 'bye'), (10)",
+            // "SELECT id, name FROM system_class",
+            // "SELECT name FROM system_class",
+            // "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
+            // "SELECT table_id, name, idx, data_type, * FROM system_column",
+            // "SELECT * FROM system_column",
+            // "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
+            // "SELECT id, name FROM system_class WHERE id <> 1",
+            // "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
+            // "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
         };
 
         for (const auto& query : test_queries) {
+            std::cout << "Executing query :: " << query << std::endl;
             auto components = parse_query(table_manager, query);
             //pretty_print(components);
             execute_query(components, buffer_manager);
@@ -2092,6 +2312,11 @@ int main() {
     new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING));
     new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT));
     bool create_table_res = db.table_manager.create_table(new_schema, false);
+
+    std::shared_ptr<TableSchema> new_schema_2 = std::make_shared<TableSchema>("test_table_2");
+    new_schema_2->add_column(std::make_unique<TableColumn>("id", 1, FieldType::INT));
+    new_schema_2->add_column(std::make_unique<TableColumn>("name", 0, FieldType::STRING));
+    bool create_table_res_2 = db.table_manager.create_table(new_schema_2, false);
 
     // assert(create_table_res == true);
 
