@@ -1688,16 +1688,37 @@ public:
 };
 
 struct QueryComponents {
-    std::vector<int> select_attributes;
+    // Projection attributes
+    std::vector<size_t> select_attributes;
+    
+    // Table info
     TableID table_id;
-    bool sum_operation = false;
-    int sum_attribute_index = -1;
-    bool group_by = false;
-    int group_by_attribute_index = -1;
-    bool where_condition = false;
-    int where_attribute_index = -1;
-    int lower_bound = std::numeric_limits<int>::min();
-    int upper_bound = std::numeric_limits<int>::max();
+    
+    // Aggregation
+    struct AggregateInfo {
+        AggrFuncType func_type;
+        size_t attribute_index;
+    };
+    std::vector<AggregateInfo> aggregates;
+    
+    // Group by
+    std::vector<size_t> group_by_attributes;
+    
+    // Where conditions
+    struct WhereCondition {
+        size_t attribute_index;
+        SimplePredicate::ComparisonOperator op;
+        std::unique_ptr<Field> value;
+    };
+    std::vector<WhereCondition> where_conditions;
+    
+    // Having conditions
+    struct HavingCondition {
+        size_t aggregate_index; // Index into aggregates vector
+        SimplePredicate::ComparisonOperator op;
+        std::unique_ptr<Field> value;
+    };
+    std::vector<HavingCondition> having_conditions;
 };
 
 QueryComponents parse_query(TableManager& table_manager, const std::string& query) {
@@ -1707,160 +1728,274 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
     std::regex table_regex("FROM (\\w+)");
     std::smatch table_match;
     if (std::regex_search(query, table_match, table_regex)) {
-        std::cout << "Table Name=" << table_match[1] << std::endl;
-        components.table_id = table_manager.get_table_id(table_match[1]);
-        std::cout << "Table Id=" << components.table_id << std::endl;
+        std::string table_name = table_match[1].str();
+        components.table_id = table_manager.get_table_id(table_name);
     } else {
-        throw std::invalid_argument("Could not find the table name in query");
+        throw std::invalid_argument("Could not find table name in query");
     }
 
     auto table_schema = table_manager.get_table_schema(components.table_id);
+    std::regex delimiter_regex(", ");
 
-    // Parse selected attributes
-    std::regex select_regex("SELECT (\\w+)(, (\\w+))?");
-    std::smatch select_matches;
-    std::string::const_iterator query_start(query.cbegin());
-    while (std::regex_search(query_start, query.cend(), select_matches, select_regex)) {
-        for (size_t i = 1; i < select_matches.size(); i += 2) {
-            if (!select_matches[i].str().empty()) {
-                auto column_idx = table_schema->find_column_idx(select_matches[i]);
+    // Parse GROUP BY
+    std::regex group_by_regex("GROUP BY (\\w+(?:, \\w+)*)");
+    std::smatch group_by_match;
+    if (std::regex_search(query, group_by_match, group_by_regex)) {
+        if (!group_by_match[1].str().empty()) {
+            std::string match = group_by_match[1].str();
+            std::sregex_token_iterator begin(match.begin(), match.end(), delimiter_regex, -1);
+            std::sregex_token_iterator end;
+            for (auto it = begin; it != end; ++it) {
+                std::string item = it->str();
+
+                size_t column_idx = table_schema->find_column_idx(item);
                 if (column_idx == INVALID_VALUE) {
-                    throw std::invalid_argument("Column name not found in table schema: " + select_matches[i].str());
+                    throw std::invalid_argument("Column not found: " + item);
                 }
-                components.select_attributes.push_back(column_idx);
+                components.group_by_attributes.push_back(column_idx);
             }
         }
-        query_start = select_matches.suffix().first;
     }
 
-    // Check for SUM operation
-    std::regex sum_regex("SUM\\{(\\d+)\\}");
-    std::smatch sum_matches;
-    if (std::regex_search(query, sum_matches, sum_regex)) {
-        components.sum_operation = true;
-        components.sum_attribute_index = std::stoi(sum_matches[1]) - 1;
+    // Parse SELECT clause
+    std::regex select_regex("SELECT ((?:\\w+\\(\\w+\\)|\\w+|\\*)(?:, (?:\\w+\\(\\w+\\)|\\w+|\\*))*)");
+    std::regex agg_regex("(\\w+)\\((\\w+)\\)");
+    std::smatch select_matches;
+    std::string::const_iterator query_start(query.cbegin());
+    if (std::regex_search(query_start, query.cend(), select_matches, select_regex) && !select_matches[1].str().empty()) {
+        std::string match = select_matches[1].str();
+        std::sregex_token_iterator begin(match.begin(), match.end(), delimiter_regex, -1);
+        std::sregex_token_iterator end;
+
+        std::vector<std::pair<size_t, size_t>> column_ref_idxs;
+        for (auto it = begin; it != end; ++it) {
+            std::string item = it->str();
+
+            // Check if it's an aggregate function
+            std::smatch agg_match;
+            if (std::regex_match(item, agg_match, agg_regex)) {
+                std::string func_name = agg_match[1].str();
+                std::string col_name = agg_match[2].str();
+
+                size_t column_idx = table_schema->find_column_idx(col_name);
+                if (column_idx == INVALID_VALUE) {
+                    throw std::invalid_argument("Column not found: " + col_name);
+                }
+
+                AggrFuncType func_type;
+                if (func_name == "SUM") func_type = AggrFuncType::SUM;
+                else if (func_name == "COUNT") func_type = AggrFuncType::COUNT;
+                else if (func_name == "MIN") func_type = AggrFuncType::MIN;
+                else if (func_name == "MAX") func_type = AggrFuncType::MAX;
+                else throw std::invalid_argument("Unknown aggregate function: " + func_name);
+
+                components.aggregates.push_back({func_type, column_idx});
+            } else if (item == "*") {
+                // All columns
+                if (components.group_by_attributes.size() != 0 && table_schema->columns.size() != components.group_by_attributes.size()) {
+                    throw std::invalid_argument("* is invalid in the select list because not all columns are contained in the GROUP BY clause.");
+                }
+                for (size_t column_idx = 0; column_idx < table_schema->columns.size(); column_idx++) {
+                    column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                }
+            } else {
+                // Regular column reference
+                size_t column_idx = table_schema->find_column_idx(item);
+                if (components.group_by_attributes.size() != 0 && std::find(components.group_by_attributes.begin(), components.group_by_attributes.end(), column_idx) == components.group_by_attributes.end()) {
+                    throw std::invalid_argument(item + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
+                }
+                if (column_idx == INVALID_VALUE) {
+                    throw std::invalid_argument("Column not found: " + item);
+                }
+                column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+            }
+        }
+
+        size_t i = 0;
+        size_t j = 0;
+        for (size_t k = 0; k < column_ref_idxs.size() + components.aggregates.size(); k++) {
+            if (i < column_ref_idxs.size() && column_ref_idxs[i].second == k) {
+                components.select_attributes.push_back(column_ref_idxs[i].first);
+                i++;
+            } else {
+                components.select_attributes.push_back(components.group_by_attributes.size() + j);
+                j++;
+            }
+        }
     }
 
-    // Check for GROUP BY clause
-    std::regex group_by_regex("GROUP BY \\{(\\d+)\\}");
-    std::smatch group_by_matches;
-    if (std::regex_search(query, group_by_matches, group_by_regex)) {
-        components.group_by = true;
-        components.group_by_attribute_index = std::stoi(group_by_matches[1]) - 1;
-    }
-
-    // Extract WHERE conditions more accurately
-    std::regex where_regex("\\{(\\d+)\\} > (\\d+) and \\{(\\d+)\\} < (\\d+)");
+    // Parse WHERE conditions
+    std::regex where_regex("WHERE (\\w+ [<>=]+ \\d+(?: AND \\w+ [<>=]+ \\d+)*)");
     std::smatch where_matches;
-    if (std::regex_search(query, where_matches, where_regex)) {
-        components.where_condition = true;
-        // Correctly identify the attribute index for the WHERE condition
-        components.where_attribute_index = std::stoi(where_matches[1]) - 1;
-        components.lower_bound = std::stoi(where_matches[2]);
-        // Ensure the same attribute is used for both conditions
-        if (std::stoi(where_matches[3]) - 1 == components.where_attribute_index) {
-            components.upper_bound = std::stoi(where_matches[4]);
-        } else {
-            std::cerr << "Error: WHERE clause conditions apply to different attributes." << std::endl;
-            // Handle error or set components.where_condition = false;
+    if (std::regex_search(query, where_matches, where_regex) && !where_matches[1].str().empty()) {
+        std::string where_clause = where_matches[1].str();
+        std::regex cond_regex("(\\w+) ([<>=]+) (\\d+)");
+        std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
+        std::sregex_iterator end;
+        
+        for (auto it = begin; it != end; ++it) {
+            std::string col_name = (*it)[1].str();
+            size_t column_idx = table_schema->find_column_idx(col_name);
+            if (column_idx == INVALID_VALUE) {
+                throw std::invalid_argument("Column not found: " + col_name);
+            }
+            
+            std::string op_str = (*it)[2].str();
+            int value = std::stoi((*it)[3].str());
+            
+            SimplePredicate::ComparisonOperator op;
+            if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
+            else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
+            else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
+            else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
+            else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
+            else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
+            
+            components.where_conditions.push_back({
+                column_idx,
+                op,
+                std::make_unique<Field>(value)
+            });
+        }
+    }
+
+    // Parse HAVING conditions
+    std::regex having_regex("HAVING (\\w+\\(\\w+\\) [<>=]+ \\d+(?: AND \\w+\\(\\w+\\) [<>=]+ \\d+)*)");
+    std::smatch having_matches;
+    if (std::regex_search(query, having_matches, having_regex) && !having_matches[1].str().empty()) {
+        std::string having_clause = having_matches[1].str();
+        std::regex cond_regex("(\\w+)\\((\\w+)\\) ([<>=]+) (\\d+)");
+        std::sregex_iterator begin(having_clause.begin(), having_clause.end(), cond_regex);
+        std::sregex_iterator end;
+        
+        for (auto it = begin; it != end; ++it) {
+            std::string func_name = (*it)[1].str();
+            std::string col_name = (*it)[2].str();
+            size_t column_idx = table_schema->find_column_idx(col_name);
+            if (column_idx == INVALID_VALUE) {
+                throw std::invalid_argument("Column not found: " + col_name);
+            }
+
+            AggrFuncType func_type;
+            if (func_name == "SUM") func_type = AggrFuncType::SUM;
+            else if (func_name == "COUNT") func_type = AggrFuncType::COUNT;
+            else if (func_name == "MIN") func_type = AggrFuncType::MIN;
+            else if (func_name == "MAX") func_type = AggrFuncType::MAX;
+            else throw std::invalid_argument("Unknown aggregate function: " + func_name);
+            
+            std::string op_str = (*it)[3].str();
+            int value = std::stoi((*it)[4].str());
+            
+            SimplePredicate::ComparisonOperator op;
+            if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
+            else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
+            else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
+            else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
+            else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
+            else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
+
+            components.aggregates.push_back({func_type, column_idx});
+            
+            components.having_conditions.push_back({
+                components.aggregates.size() - 1,
+                op,
+                std::make_unique<Field>(value)
+            });
         }
     }
 
     return components;
 }
 
-void pretty_print(const QueryComponents& components) {
-    std::cout << "Query Components:\n";
-    std::cout << "  Selected Attributes: ";
-    for (auto attr : components.select_attributes) {
-        std::cout << "{" << attr + 1 << "} "; // Convert back to 1-based indexing for display
-    }
-    std::cout << "\n  SUM Operation: " << (components.sum_operation ? "Yes" : "No");
-    if (components.sum_operation) {
-        std::cout << " on {" << components.sum_attribute_index + 1 << "}";
-    }
-    std::cout << "\n  GROUP BY: " << (components.group_by ? "Yes" : "No");
-    if (components.group_by) {
-        std::cout << " on {" << components.group_by_attribute_index + 1 << "}";
-    }
-    std::cout << "\n  WHERE Condition: " << (components.where_condition ? "Yes" : "No");
-    if (components.where_condition) {
-        std::cout << " on {" << components.where_attribute_index + 1 << "} > " << components.lower_bound << " and < " << components.upper_bound;
-    }
-    std::cout << std::endl;
-}
-
-void execute_query(const QueryComponents& components, 
-                  BufferManager& buffer_manager) {
-    // Stack allocation of ScanOperator
+void execute_query(const QueryComponents& components, BufferManager& buffer_manager) {
+    // Start with scan
     ScanOperator scan_op(buffer_manager, components.table_id);
+    Operator* current_op = &scan_op;
 
-    // Using a pointer to Operator to handle polymorphism
-    Operator* root_op = &scan_op;
+    // Optional operators
+    std::optional<SelectOperator> select_op;
+    std::optional<HashAggregationOperator> agg_op;
+    std::optional<SelectOperator> having_op;
+    std::optional<ProjectOperator> project_op;
 
-    // Buffer for optional operators to ensure lifetime
-    std::optional<SelectOperator> select_op_buffer;
-    std::optional<HashAggregationOperator> hash_agg_op_buffer;
-    std::optional<ProjectOperator> project_op_buffer;
-
-    // Apply WHERE conditions
-    if (components.where_attribute_index != -1) {
-        // Create simple predicates with comparison operators
-        auto predicate1 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.where_attribute_index),
-            SimplePredicate::Operand(std::make_unique<Field>(components.lower_bound)),
-            SimplePredicate::ComparisonOperator::GT
-        );
-
-        auto predicate2 = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(components.where_attribute_index),
-            SimplePredicate::Operand(std::make_unique<Field>(components.upper_bound)),
-            SimplePredicate::ComparisonOperator::LT
-        );
-
-        // Combine simple predicates into a complex predicate with logical AND operator
-        auto complex_predicate = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
-        complex_predicate->add_predicate(std::move(predicate1));
-        complex_predicate->add_predicate(std::move(predicate2));
-
-        // Using std::optional to manage the lifetime of SelectOperator
-        select_op_buffer.emplace(*root_op, std::move(complex_predicate));
-        root_op = &*select_op_buffer;
-    }
-
-    // Apply SUM or GROUP BY operation
-    if (components.sum_operation || components.group_by) {
-        std::vector<size_t> group_by_attrs;
-        if (components.group_by) {
-            group_by_attrs.push_back(static_cast<size_t>(components.group_by_attribute_index));
+    // Add WHERE conditions if any
+    if (!components.where_conditions.empty()) {
+        auto complex_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+        for (const auto& cond : components.where_conditions) {
+            auto simple_pred = std::make_unique<SimplePredicate>(
+                SimplePredicate::Operand(cond.attribute_index),
+                SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
+                cond.op
+            );
+            complex_pred->add_predicate(std::move(simple_pred));
         }
-        std::vector<AggrFunc> aggr_funcs{
-            {AggrFuncType::SUM, static_cast<size_t>(components.sum_attribute_index)}
-        };
-
-        // Using std::optional to manage the lifetime of HashAggregationOperator
-        hash_agg_op_buffer.emplace(*root_op, group_by_attrs, aggr_funcs);
-        root_op = &*hash_agg_op_buffer;
+        select_op.emplace(*current_op, std::move(complex_pred));
+        current_op = &*select_op;
     }
 
-    std::vector<size_t> attr_indexes = std::vector<size_t>(components.select_attributes.begin(), components.select_attributes.end());
-    project_op_buffer.emplace(*root_op, attr_indexes);
-    root_op = &*project_op_buffer;
+    // Add aggregation if needed
+    if (!components.aggregates.empty() || !components.group_by_attributes.empty()) {
+        std::vector<AggrFunc> aggr_funcs;
+        for (const auto& agg : components.aggregates) {
+            aggr_funcs.push_back({agg.func_type, agg.attribute_index});
+        }
+        agg_op.emplace(*current_op, components.group_by_attributes, aggr_funcs);
+        current_op = &*agg_op;
 
-    // Execute the Root Operator
-    root_op->open();
-    while (root_op->next()) {
-        // Retrieve and print the current tuple
-        const auto& output = root_op->get_output();
+        // Add HAVING if needed
+        if (!components.having_conditions.empty()) {
+            auto having_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+            for (const auto& cond : components.having_conditions) {
+                auto simple_pred = std::make_unique<SimplePredicate>(
+                    SimplePredicate::Operand(components.group_by_attributes.size() + cond.aggregate_index),
+                    SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
+                    cond.op
+                );
+                having_pred->add_predicate(std::move(simple_pred));
+            }
+            having_op.emplace(*current_op, std::move(having_pred));
+            current_op = &*having_op;
+        }
+    }
+
+    // Add final projection
+    project_op.emplace(*current_op, components.select_attributes);
+    current_op = &*project_op;
+
+    // Execute query
+    current_op->open();
+    while (current_op->next()) {
+        const auto& output = current_op->get_output();
         for (const auto& field : output) {
             field->print();
             std::cout << " ";
         }
         std::cout << std::endl;
     }
-    root_op->close();
+    current_op->close();
     std::cout << std::endl;
 }
+
+// void pretty_print(const QueryComponents& components) {
+//     std::cout << "Query Components:\n";
+//     std::cout << "  Selected Attributes: ";
+//     for (auto attr : components.select_attributes) {
+//         std::cout << "{" << attr + 1 << "} "; // Convert back to 1-based indexing for display
+//     }
+//     std::cout << "\n  SUM Operation: " << (components.sum_operation ? "Yes" : "No");
+//     if (components.sum_operation) {
+//         std::cout << " on {" << components.sum_attribute_index + 1 << "}";
+//     }
+//     std::cout << "\n  GROUP BY: " << (components.group_by ? "Yes" : "No");
+//     if (components.group_by) {
+//         std::cout << " on {" << components.group_by_attribute_index + 1 << "}";
+//     }
+//     std::cout << "\n  WHERE Condition: " << (components.where_condition ? "Yes" : "No");
+//     if (components.where_condition) {
+//         std::cout << " on {" << components.where_attribute_index + 1 << "} > " << components.lower_bound << " and < " << components.upper_bound;
+//     }
+//     std::cout << std::endl;
+// }
 
 class BuzzDB {
 public:
@@ -1876,48 +2011,53 @@ public:
         // Storage Manager automatically created
     }
 
-    // insert function
-    void insert(int key, int value) {
-        tuple_insertion_attempt_counter += 1;
+    // // insert function
+    // void insert(int key, int value) {
+    //     tuple_insertion_attempt_counter += 1;
 
-        // Create a new tuple with the given key and value
-        auto new_tuple = std::make_unique<Tuple>();
+    //     // Create a new tuple with the given key and value
+    //     auto new_tuple = std::make_unique<Tuple>();
 
-        auto key_field = std::make_unique<Field>(key);
-        auto value_field = std::make_unique<Field>(value);
-        float float_val = 132.04;
-        auto float_field = std::make_unique<Field>(float_val);
-        auto string_field = std::make_unique<Field>("buzzdb");
+    //     auto key_field = std::make_unique<Field>(key);
+    //     auto value_field = std::make_unique<Field>(value);
+    //     float float_val = 132.04;
+    //     auto float_field = std::make_unique<Field>(float_val);
+    //     auto string_field = std::make_unique<Field>("buzzdb");
 
-        new_tuple->add_field(std::move(key_field));
-        new_tuple->add_field(std::move(value_field));
-        new_tuple->add_field(std::move(float_field));
-        new_tuple->add_field(std::move(string_field));
+    //     new_tuple->add_field(std::move(key_field));
+    //     new_tuple->add_field(std::move(value_field));
+    //     new_tuple->add_field(std::move(float_field));
+    //     new_tuple->add_field(std::move(string_field));
 
-        InsertOperator insert_op(buffer_manager, 10);
-        insert_op.set_tuple_to_insert(std::move(new_tuple));
-        bool status = insert_op.next();
+    //     InsertOperator insert_op(buffer_manager, 10);
+    //     insert_op.set_tuple_to_insert(std::move(new_tuple));
+    //     bool status = insert_op.next();
 
-        assert(status == true);
+    //     assert(status == true);
 
-        // if (tuple_insertion_attempt_counter % 10 != 0) {
-        //     // Assuming you want to delete the first tuple from the first page
-        //     DeleteOperator del_op(buffer_manager, 0, 0); 
-        //     if (!del_op.next()) {
-        //         std::cerr << "Failed to delete tuple." << std::endl;
-        //     }
-        // }
+    //     // if (tuple_insertion_attempt_counter % 10 != 0) {
+    //     //     // Assuming you want to delete the first tuple from the first page
+    //     //     DeleteOperator del_op(buffer_manager, 0, 0); 
+    //     //     if (!del_op.next()) {
+    //     //         std::cerr << "Failed to delete tuple." << std::endl;
+    //     //     }
+    //     // }
 
 
-    }
+    // }
 
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
             "SELECT id, name FROM system_class",
             "SELECT name FROM system_class",
-            "SELECT SUM{1} FROM system_class GROUP BY {1} WHERE {1} > 2 and {1} < 6",
-            "SELECT {0}, {1}, {2}, {3} FROM system_column",
+            "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
+            "SELECT table_id, name, idx, data_type, * FROM system_column",
+            "SELECT * FROM system_column",
+            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
+            "SELECT id, name FROM system_class WHERE id <> 1",
+            "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
+            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
         };
 
         for (const auto& query : test_queries) {
@@ -1965,11 +2105,11 @@ int main() {
     std::cout << *schema3 << std::endl;
     std::cout << *schema4 << std::endl;
 
-    int field1, field2;
-    int i = 0;
-    while (input_file >> field1 >> field2) {
-        db.insert(field1, field2);
-    }
+    // int field1, field2;
+    // int i = 0;
+    // while (input_file >> field1 >> field2) {
+    //     db.insert(field1, field2);
+    // }
 
     auto start = std::chrono::high_resolution_clock::now();
 
