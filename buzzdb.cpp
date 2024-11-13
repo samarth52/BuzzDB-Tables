@@ -1308,13 +1308,10 @@ public:
     }
 
     bool next() override {
-        std::cout << "here0\n";
         if (num_times_remaining == 0) {
-            std::cout << "here1\n";
             has_output = false;
             return false;
         }
-        std::cout << "here2\n";
         num_times_remaining--;
         has_output = true;
         return true;
@@ -1327,12 +1324,9 @@ public:
 
     std::vector<std::unique_ptr<Field>> get_output() override {
         if (has_output) {
-            std::cout << "here3\n";
             std::vector<std::unique_ptr<Field>> output_copy;
             for (auto& field : value_tuple->fields) {
                 output_copy.push_back(field->clone());
-                output_copy.back()->print();
-                std::cout << std::endl;
             }
             return output_copy;
         }
@@ -1469,6 +1463,13 @@ public:
     }
 };
 
+class TableManager;
+std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
+    BufferManager& buffer_manager,
+    TableManager& table_manager,
+    const std::string& query
+);
+
 using ColumnID = uint16_t;
 class TableColumn {
 public:
@@ -1604,6 +1605,8 @@ public:
     {
         schema_map[SYSTEM_CLASS_TABLE_ID] = SYSTEM_CLASS_SCHEMA;
         schema_map[SYSTEM_COLUMN_TABLE_ID] = SYSTEM_COLUMN_SCHEMA;
+        name_map[SYSTEM_CLASS_SCHEMA->name] = SYSTEM_CLASS_TABLE_ID;
+        name_map[SYSTEM_COLUMN_SCHEMA->name] = SYSTEM_COLUMN_TABLE_ID;
 
         // If the system tables do not exist, run the bootstrap process
         if (!buffer_manager.file_exists(SYSTEM_NEXT_TABLE_ID)) {
@@ -1631,39 +1634,31 @@ public:
             return name_map[name];
         }
 
-        auto table_name_equality_predicate = std::make_unique<SimplePredicate>(
-            SimplePredicate::Operand(SYSTEM_CLASS_SCHEMA->find_column_idx("name")),
-            SimplePredicate::Operand(std::make_unique<Field>(name)),
-            SimplePredicate::ComparisonOperator::EQ
-        );
-        std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-        SelectOperator select_op(std::move(scan_op), std::move(table_name_equality_predicate));
-        select_op.open();
-        while (select_op.next()) {
-            auto tuple = select_op.get_output();
-            TableID table_id = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("id")]->as_int();
-
-            if (name_map.size() >= MAX_NAMES_IN_MEMORY) {
-                auto evicted_name = name_policy->evict();
-                if (evicted_name != "") {
-                    std::cout << "Evicted table id from cache: id=" << name_map[evicted_name] << " :: name=" << evicted_name << std::endl;
-                    name_map.erase(evicted_name);
-                }
-            }
-            name_policy->touch(name);
-            name_map[name] = table_id;
-            std::cout << "Fetched table id from disk: id=" << name_map[name] << " :: name=" << name << std::endl;
-            return table_id;
+        auto query = "SELECT id FROM system_class WHERE name = '" + name + "'";
+        auto output_tuples = plan_and_execute_query(buffer_manager, *this, query);
+        if (output_tuples.size() == 0) {
+            return std::numeric_limits<TableID>::max();
         }
 
-        return std::numeric_limits<TableID>::max();
+        auto tuple = std::move(output_tuples[0]);
+        TableID table_id = tuple->fields[0]->as_int();
+        if (name_map.size() >= MAX_NAMES_IN_MEMORY) {
+            auto evicted_name = name_policy->evict();
+            if (evicted_name != "" && name_map[evicted_name] >= NUM_SYSTEM_TABLES) {
+                std::cout << "Evicted table id from cache: id=" << name_map[evicted_name] << " :: name=" << evicted_name << std::endl;
+                name_map.erase(evicted_name);
+            }
+        }
+        name_policy->touch(name);
+        name_map[name] = table_id;
+        std::cout << "Fetched table id from disk: id=" << name_map[name] << " :: name=" << name << std::endl;
+        return table_id;
     }
 
     std::shared_ptr<TableSchema> get_table_schema(std::string name) {
         TableID table_id;
         if ((table_id = get_table_id(name)) == std::numeric_limits<TableID>::max()) {
-            std::cerr << "Failed to fetch table schema from disk: name=" << name << " :: Table does not exist." << std::endl;
-            return nullptr;
+            throw std::invalid_argument("Failed to fetch table schema from disk: name=" + name + " :: Table does not exist.");
         }
         return get_table_schema(table_id);
     }
@@ -1679,52 +1674,26 @@ public:
         }
 
         // Traverse through system_class and get all metadata for given table_id
-        std::shared_ptr<TableSchema> table_schema = nullptr;
-        {
-            auto table_id_equality_predicate = std::make_unique<SimplePredicate>(
-                SimplePredicate::Operand(SYSTEM_CLASS_SCHEMA->find_column_idx("id")),
-                SimplePredicate::Operand(std::make_unique<Field>(table_id)),
-                SimplePredicate::ComparisonOperator::EQ
-            );
-            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-            SelectOperator select_op(std::move(scan_op), std::move(table_id_equality_predicate));
-            select_op.open();
-            while (select_op.next()) {
-                auto tuple = select_op.get_output();
-                std::string name = tuple[SYSTEM_CLASS_SCHEMA->find_column_idx("name")]->as_string();
-                table_schema = std::make_shared<TableSchema>(name, table_id);
-            }
-        }
-
-        if (table_schema == nullptr) {
-            std::cerr << "Failed to fetch table schema from disk: id=" << table_id << " :: Table does not exist." << std::endl;
-            return nullptr;
-        }
+        std::string table_metadata_query = "SELECT name FROM system_class WHERE id = " + std::to_string(table_id);
+        auto table_metadata_tuple = std::move(plan_and_execute_query(buffer_manager, *this, table_metadata_query)[0]);
+        std::string name = table_metadata_tuple->fields[0]->as_string();
+        std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
 
         // Traverse through system_column and get all column metadata for given table_id
-        {
-            auto table_id_equality_predicate = std::make_unique<SimplePredicate>(
-                SimplePredicate::Operand(SYSTEM_COLUMN_SCHEMA->find_column_idx("table_id")),
-                SimplePredicate::Operand(std::make_unique<Field>(table_id)),
-                SimplePredicate::ComparisonOperator::EQ
+        std::string table_column_query = "SELECT name, idx, data_type FROM system_column WHERE table_id = " + std::to_string(table_id);
+        auto table_column_tuples = plan_and_execute_query(buffer_manager, *this, table_column_query);
+        for (auto& tuple : table_column_tuples) {
+            std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
+                tuple->fields[0]->as_string(),
+                tuple->fields[1]->as_int(),
+                FieldType(tuple->fields[2]->as_int())
             );
-            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_COLUMN_TABLE_ID);
-            SelectOperator select_op(std::move(scan_op), std::move(table_id_equality_predicate));
-            select_op.open();
-            while (select_op.next()) {
-                auto tuple = select_op.get_output();
-                std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
-                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("name")]->as_string(),
-                    tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("idx")]->as_int(),
-                    FieldType(tuple[SYSTEM_COLUMN_SCHEMA->find_column_idx("data_type")]->as_int())
-                );
-                table_schema->add_column(std::move(column));
-            }
+            table_schema->add_column(std::move(column));
         }
 
         if (schema_map.size() >= MAX_SCHEMAS_IN_MEMORY) {
             TableID evicted_table_id = schema_policy->evict();
-            if (evicted_table_id != INVALID_VALUE) {
+            if (evicted_table_id != INVALID_VALUE && evicted_table_id >= NUM_SYSTEM_TABLES) {
                 std::cout << "Evicted table id from cache: id=" << evicted_table_id << std::endl;
                 schema_map.erase(evicted_table_id);
             }
@@ -1738,15 +1707,9 @@ public:
     bool create_table(std::shared_ptr<TableSchema> table_schema, bool is_bootstrap) {
         if (!is_bootstrap) {
             // Check if table exists
-            auto table_name_equality_predicate = std::make_unique<SimplePredicate>(
-                SimplePredicate::Operand(SYSTEM_CLASS_SCHEMA->find_column_idx("name")),
-                SimplePredicate::Operand(std::make_unique<Field>(table_schema->name)),
-                SimplePredicate::ComparisonOperator::EQ
-            );
-
-            std::unique_ptr<ScanOperator> scan_op = std::make_unique<ScanOperator>(buffer_manager, SYSTEM_CLASS_TABLE_ID);
-            SelectOperator select_op(std::move(scan_op), std::move(table_name_equality_predicate));
-            while (select_op.next()) {
+            std::string table_name_query = "SELECT * FROM system_class WHERE name = '" + table_schema->name + "'";
+            auto table_metadata_tuples = plan_and_execute_query(buffer_manager, *this, table_name_query);
+            if (table_metadata_tuples.size() > 0) {
                 std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
                 return false;
             }
@@ -1754,29 +1717,26 @@ public:
 
         TableID table_id = next_table_id++;
 
-        // Insert table id and name in system_class        
-        std::unique_ptr<Tuple> system_class_tuple = std::make_unique<Tuple>();
-        system_class_tuple->add_field(std::make_unique<Field>(table_id));
-        system_class_tuple->add_field(std::make_unique<Field>(table_schema->name));
-        std::unique_ptr<ValueOperator> new_system_class_tuple_op = std::make_unique<ValueOperator>(std::move(system_class_tuple));
-        InsertOperator insert_system_class_op(std::move(new_system_class_tuple_op), buffer_manager, SYSTEM_CLASS_TABLE_ID);
-        insert_system_class_op.open();
-        bool insert_system_class_res = insert_system_class_op.next();
-        assert(insert_system_class_res == true);
+        // Insert table id and name in system_class
+        std::string insert_system_class_query = "INSERT INTO system_class VALUES (" + std::to_string(table_id) + ", " + table_schema->name + ")";
+        auto insert_system_class_res = plan_and_execute_query(buffer_manager, *this, insert_system_class_query);
+        assert(insert_system_class_res.size() == 1);
 
         // Insert table columns in system_column
+        std::stringstream insert_system_column_query;
+        std::string separator = "";
+        insert_system_column_query << "INSERT INTO system_column VALUES ";
         for (auto& column : table_schema->columns) {
-            std::unique_ptr<Tuple> system_column_tuple = std::make_unique<Tuple>();
-            system_column_tuple->add_field(std::make_unique<Field>(table_id));
-            system_column_tuple->add_field(std::make_unique<Field>(column->name));
-            system_column_tuple->add_field(std::make_unique<Field>(column->idx));
-            system_column_tuple->add_field(std::make_unique<Field>(column->type));
-            std::unique_ptr<ValueOperator> new_system_column_tuple_op = std::make_unique<ValueOperator>(std::move(system_column_tuple));
-            InsertOperator insert_system_column_op(std::move(new_system_column_tuple_op), buffer_manager, SYSTEM_COLUMN_TABLE_ID);
-            insert_system_column_op.open();
-            bool insert_system_column_res = insert_system_column_op.next();
-            assert(insert_system_column_res == true);
+            insert_system_column_query << separator << "(";
+            insert_system_column_query << table_id << ", ";
+            insert_system_column_query << column->name << ", ";
+            insert_system_column_query << column->idx << ", ";
+            insert_system_column_query << column->type;
+            insert_system_column_query << ")";
+            separator = ", ";
         }
+        auto insert_system_column_res = plan_and_execute_query(buffer_manager, *this, insert_system_column_query.str());
+        assert(insert_system_column_res.size() == table_schema->columns.size());
         table_schema->id = table_id;
 
         return true;
@@ -2105,6 +2065,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 // Parse SELECT
                 std::string select_query = query.substr(query.find("SELECT"));
                 components.insert_select_query = std::make_unique<QueryComponents>(parse_query(table_manager, select_query));
+                if (components.table_id == components.insert_select_query->table_id) {
+                    throw std::invalid_argument("Cannot insert tuples from the same table");
+                }
             }
         } else {
             throw std::invalid_argument("Invalid INSERT query syntax");
@@ -2202,6 +2165,29 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
     std::cout << std::endl;
 }
 
+std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
+    BufferManager& buffer_manager,
+    TableManager& table_manager,
+    const std::string& query
+) {
+    std::cout << "Executing sub-query :: " << query << std::endl;
+    auto components = parse_query(table_manager, query);
+    auto root_op = plan_query(components, buffer_manager);
+    std::vector<std::unique_ptr<Tuple>> output_copy;
+
+    root_op->open();
+    while (root_op->next()) {
+        const auto& output = root_op->get_output();
+        std::unique_ptr<Tuple> tuple_copy = std::make_unique<Tuple>();
+        for (const auto& field : output) {
+            tuple_copy->add_field(field->clone());
+        }
+        output_copy.push_back(std::move(tuple_copy));
+    }
+    root_op->close();
+    return output_copy;
+}
+
 // void pretty_print(const QueryComponents& components) {
 //     std::cout << "Query Components:\n";
 //     std::cout << "  Selected Attributes: ";
@@ -2275,25 +2261,23 @@ public:
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
-            // "SELECT * FROM test_table_2",
-            // "SELECT * FROM system_class",
-            // "INSERT INTO test_table_2 SELECT * FROM system_class",
-            // "INSERT INTO system_class SELECT * FROM test_table_2",
-            // "SELECT * FROM test_table_2",
-            // "SELECT * FROM system_class",
+            "SELECT * FROM test_table_2",
+            "SELECT * FROM system_class",
+            "INSERT INTO test_table_2 SELECT * FROM system_class",
+            "SELECT * FROM test_table_2",
             "SELECT * FROM system_column WHERE name = 'name'",
-            // "INSERT INTO system_class VALUES (5, 'hello')",
-            // "INSERT INTO system_class VALUES (5, 'hello'), (6, 'bye'), (7, 'yo')",
-            // // "INSERT INTO system_class VALUES (8, 'hello'), (9, 'bye'), (10)",
-            // "SELECT id, name FROM system_class",
-            // "SELECT name FROM system_class",
-            // "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
-            // "SELECT table_id, name, idx, data_type, * FROM system_column",
-            // "SELECT * FROM system_column",
-            // "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
-            // "SELECT id, name FROM system_class WHERE id <> 1",
-            // "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
-            // "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
+            "INSERT INTO test_table_2 VALUES (5, 'hello')",
+            "INSERT INTO test_table_2 VALUES (6, 'hello'), (7, 'bye'), (8, 'yo')",
+            // "INSERT INTO test_table_2 VALUES (9, 'hello'), (10, 'bye'), (11)",
+            "SELECT id, name FROM system_class",
+            "SELECT name FROM system_class",
+            "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
+            "SELECT table_id, name, idx, data_type, * FROM system_column",
+            "SELECT * FROM system_column",
+            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
+            "SELECT id, name FROM system_class WHERE id <> 1",
+            "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
+            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
         };
 
         for (const auto& query : test_queries) {
