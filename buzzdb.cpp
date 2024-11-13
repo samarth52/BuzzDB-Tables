@@ -5,6 +5,8 @@
 #include <iostream>
 #include <chrono>
 #include <cassert>
+#include <format>
+#include <cstring>
 
 #include <list>
 #include <unordered_map>
