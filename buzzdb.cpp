@@ -1636,7 +1636,7 @@ public:
             return name_map[name];
         }
 
-        auto query = "SELECT id FROM system_class WHERE name = '" + name + "'";
+        auto query = std::format("SELECT id FROM system_class WHERE name = '{}'", name);
         auto output_tuples = plan_and_execute_query(buffer_manager, *this, query);
         if (output_tuples.size() == 0) {
             return std::numeric_limits<TableID>::max();
@@ -1676,13 +1676,13 @@ public:
         }
 
         // Traverse through system_class and get all metadata for given table_id
-        std::string table_metadata_query = "SELECT name FROM system_class WHERE id = " + std::to_string(table_id);
+        std::string table_metadata_query = std::format("SELECT name FROM system_class WHERE id = {}", table_id);
         auto table_metadata_tuple = std::move(plan_and_execute_query(buffer_manager, *this, table_metadata_query)[0]);
         std::string name = table_metadata_tuple->fields[0]->as_string();
         std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
 
         // Traverse through system_column and get all column metadata for given table_id
-        std::string table_column_query = "SELECT name, idx, data_type FROM system_column WHERE table_id = " + std::to_string(table_id);
+        std::string table_column_query = std::format("SELECT name, idx, data_type FROM system_column WHERE table_id = {}", table_id);
         auto table_column_tuples = plan_and_execute_query(buffer_manager, *this, table_column_query);
         for (auto& tuple : table_column_tuples) {
             std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
@@ -1709,7 +1709,7 @@ public:
     bool create_table(std::shared_ptr<TableSchema> table_schema, bool is_bootstrap) {
         if (!is_bootstrap) {
             // Check if table exists
-            std::string table_name_query = "SELECT * FROM system_class WHERE name = '" + table_schema->name + "'";
+            std::string table_name_query = std::format("SELECT * FROM system_class WHERE name = '{}'", table_schema->name);
             auto table_metadata_tuples = plan_and_execute_query(buffer_manager, *this, table_name_query);
             if (table_metadata_tuples.size() > 0) {
                 std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
@@ -1720,7 +1720,7 @@ public:
         TableID table_id = next_table_id++;
 
         // Insert table id and name in system_class
-        std::string insert_system_class_query = "INSERT INTO system_class VALUES (" + std::to_string(table_id) + ", " + table_schema->name + ")";
+        std::string insert_system_class_query = std::format("INSERT INTO system_class VALUES ({}, {})", table_id, table_schema->name);
         auto insert_system_class_res = plan_and_execute_query(buffer_manager, *this, insert_system_class_query);
         assert(insert_system_class_res.size() == 1);
 
@@ -1729,12 +1729,7 @@ public:
         std::string separator = "";
         insert_system_column_query << "INSERT INTO system_column VALUES ";
         for (auto& column : table_schema->columns) {
-            insert_system_column_query << separator << "(";
-            insert_system_column_query << table_id << ", ";
-            insert_system_column_query << column->name << ", ";
-            insert_system_column_query << column->idx << ", ";
-            insert_system_column_query << column->type;
-            insert_system_column_query << ")";
+            insert_system_column_query << std::format("{}({}, {}, {}, {})", separator, table_id, column->name, column->idx, (int) column->type);
             separator = ", ";
         }
         auto insert_system_column_res = plan_and_execute_query(buffer_manager, *this, insert_system_column_query.str());
