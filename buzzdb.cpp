@@ -1930,11 +1930,11 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         }
 
         // Parse WHERE conditions
-        std::regex where_regex("WHERE (\\w+ [<>=]+ \\d+(?: AND \\w+ [<>=]+ \\d+)*)");
+        std::regex where_regex("WHERE (\\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*')(?: AND \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*'))*)");
         std::smatch where_matches;
         if (std::regex_search(query, where_matches, where_regex) && !where_matches[1].str().empty()) {
             std::string where_clause = where_matches[1].str();
-            std::regex cond_regex("(\\w+) ([<>=]+) (\\d+)");
+            std::regex cond_regex("(\\w+) ([<>=]+) (\\d+|\\d+\\.\\d+|'[^']*')");
             std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
             std::sregex_iterator end;
 
@@ -1946,7 +1946,23 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 }
 
                 std::string op_str = (*it)[2].str();
-                int value = std::stoi((*it)[3].str());
+                std::string value_str = (*it)[3].str();
+                
+                std::unique_ptr<Field> value;
+                if (value_str[0] == '\'') {
+                    // String value
+                    value = std::make_unique<Field>(value_str.substr(1, value_str.length()-2));
+                } else if (value_str.find('.') != std::string::npos) {
+                    // Float value
+                    value = std::make_unique<Field>(std::stof(value_str));
+                } else {
+                    // Integer value
+                    value = std::make_unique<Field>(std::stoi(value_str));
+                }
+
+                if (std::next(table_schema->columns.begin(), column_idx)->get()->type != value->type) {
+                    throw std::invalid_argument("Cannot compare values of different types");
+                }
 
                 SimplePredicate::ComparisonOperator op;
                 if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
@@ -1959,7 +1975,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 components.where_conditions.push_back({
                     column_idx,
                     op,
-                    std::make_unique<Field>(value)
+                    std::move(value)
                 });
             }
         }
@@ -2259,12 +2275,13 @@ public:
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
-            "SELECT * FROM test_table_2",
-            "SELECT * FROM system_class",
-            "INSERT INTO test_table_2 SELECT * FROM system_class",
-            "INSERT INTO system_class SELECT * FROM test_table_2",
-            "SELECT * FROM test_table_2",
-            "SELECT * FROM system_class",
+            // "SELECT * FROM test_table_2",
+            // "SELECT * FROM system_class",
+            // "INSERT INTO test_table_2 SELECT * FROM system_class",
+            // "INSERT INTO system_class SELECT * FROM test_table_2",
+            // "SELECT * FROM test_table_2",
+            // "SELECT * FROM system_class",
+            "SELECT * FROM system_column WHERE name = 'name'",
             // "INSERT INTO system_class VALUES (5, 'hello')",
             // "INSERT INTO system_class VALUES (5, 'hello'), (6, 'bye'), (7, 'yo')",
             // // "INSERT INTO system_class VALUES (8, 'hello'), (9, 'bye'), (10)",
@@ -2314,8 +2331,8 @@ int main() {
     bool create_table_res = db.table_manager.create_table(new_schema, false);
 
     std::shared_ptr<TableSchema> new_schema_2 = std::make_shared<TableSchema>("test_table_2");
-    new_schema_2->add_column(std::make_unique<TableColumn>("id", 1, FieldType::INT));
-    new_schema_2->add_column(std::make_unique<TableColumn>("name", 0, FieldType::STRING));
+    new_schema_2->add_column(std::make_unique<TableColumn>("id", 0, FieldType::INT));
+    new_schema_2->add_column(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
     bool create_table_res_2 = db.table_manager.create_table(new_schema_2, false);
 
     // assert(create_table_res == true);
