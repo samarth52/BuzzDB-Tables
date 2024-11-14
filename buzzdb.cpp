@@ -1835,6 +1835,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
 
                 // Check if it's an aggregate function
                 std::smatch agg_match;
+                auto& gb_attributes = components.group_by_attributes;
                 if (std::regex_match(item, agg_match, agg_regex)) {
                     std::string func_name = agg_match[1].str();
                     std::string col_name = agg_match[2].str();
@@ -1854,16 +1855,18 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     components.aggregates.push_back({func_type, column_idx});
                 } else if (item == "*") {
                     // All columns
-                    if (components.group_by_attributes.size() != 0 && table_schema->columns.size() != components.group_by_attributes.size()) {
-                        throw std::invalid_argument("* is invalid in the select list because not all columns are contained in the GROUP BY clause.");
-                    }
+                    auto column_it = table_schema->columns.begin();
                     for (size_t column_idx = 0; column_idx < table_schema->columns.size(); column_idx++) {
+                        if (gb_attributes.size() != 0 && std::find(gb_attributes.begin(), gb_attributes.end(), column_it->get()->idx) == gb_attributes.end()) {
+                            throw std::invalid_argument(column_it->get()->name + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
+                        }
                         column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                        column_it++;
                     }
                 } else {
                     // Regular column reference
                     size_t column_idx = table_schema->find_column_idx(item);
-                    if (components.group_by_attributes.size() != 0 && std::find(components.group_by_attributes.begin(), components.group_by_attributes.end(), column_idx) == components.group_by_attributes.end()) {
+                    if (gb_attributes.size() != 0 && std::find(gb_attributes.begin(), gb_attributes.end(), column_idx) == gb_attributes.end()) {
                         throw std::invalid_argument(item + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
                     }
                     if (column_idx == INVALID_VALUE) {
@@ -2258,6 +2261,7 @@ public:
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
+            // "SELECT * FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
             "SELECT * FROM test_table_2",
             "SELECT * FROM system_class",
             "INSERT INTO test_table_2 SELECT * FROM system_class",
@@ -2309,12 +2313,12 @@ int main() {
     new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT));
     new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING));
     new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT));
-    bool create_table_res = db.table_manager.create_table(new_schema, false);
+    db.table_manager.create_table(new_schema, false);
 
     std::shared_ptr<TableSchema> new_schema_2 = std::make_shared<TableSchema>("test_table_2");
     new_schema_2->add_column(std::make_unique<TableColumn>("id", 0, FieldType::INT));
     new_schema_2->add_column(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
-    bool create_table_res_2 = db.table_manager.create_table(new_schema_2, false);
+    db.table_manager.create_table(new_schema_2, false);
 
     // assert(create_table_res == true);
 
