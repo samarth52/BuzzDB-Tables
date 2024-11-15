@@ -2270,7 +2270,6 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
         current_op = std::make_unique<ProjectOperator>(std::move(current_op), components.select_attributes);
         return current_op;
     } else {
-        // Execute INSERT
         std::unique_ptr<Operator> current_op;
 
         if (components.insert_select_query) {
@@ -2295,7 +2294,6 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
 }
 
 void execute_query(TableManager& table_manager, BufferManager& buffer_manager, const QueryComponents& components) {
-    // Get column widths by examining first row
     std::vector<size_t> col_widths;
     std::vector<std::vector<std::string>> rows;
 
@@ -2319,13 +2317,15 @@ void execute_query(TableManager& table_manager, BufferManager& buffer_manager, c
             std::vector<std::string> row;
 
             // Convert each field to string and track max width
+            int i = 0;
             for (const auto& field : output) {
                 std::stringstream ss;
                 field->print(ss);
                 std::string val = ss.str();
                 row.push_back(val);
 
-                col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
+                col_widths[i] = std::max(col_widths[i], val.length());
+                i++;
             }
             rows.push_back(std::move(row));
         }
