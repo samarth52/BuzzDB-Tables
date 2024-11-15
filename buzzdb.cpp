@@ -2128,6 +2128,47 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         } else {
             throw std::invalid_argument("Invalid INSERT query syntax");
         }
+    } else if (query.substr(0, 12) == "CREATE TABLE") {
+        components.type = QueryComponents::QueryType::CREATE_TABLE;
+        components.is_ddl = true;
+
+        // Parse CREATE TABLE query
+        std::regex create_table_regex("CREATE TABLE (\\w+)\\s*\\((.*?)\\)");
+        std::smatch create_table_match;
+
+        if (std::regex_search(query, create_table_match, create_table_regex)) {
+            std::string table_name = create_table_match[1].str();
+            std::string columns_str = create_table_match[2].str();
+
+            // Create new table schema
+            auto schema = std::make_shared<TableSchema>(table_name);
+            TableColumns columns;
+
+            // Parse column definitions
+            std::regex column_regex("(\\w+)\\s+(INT|STRING|FLOAT)(?:\\s+NOT\\s+NULL)?");
+            std::sregex_iterator column_begin(columns_str.begin(), columns_str.end(), column_regex);
+            std::sregex_iterator column_end;
+
+            ColumnID idx = 0;
+            for (auto it = column_begin; it != column_end; ++it) {
+                std::string col_name = (*it)[1].str();
+                std::string type_str = (*it)[2].str();
+                bool not_null = it->str().find("NOT NULL") != std::string::npos;
+
+                FieldType type;
+                if (type_str == "INT") type = FieldType::INT;
+                else if (type_str == "STRING") type = FieldType::STRING;
+                else if (type_str == "FLOAT") type = FieldType::FLOAT;
+                else throw std::invalid_argument("Invalid column type: " + type_str);
+
+                columns.push_back(std::make_unique<TableColumn>(col_name, idx++, type, not_null));
+            }
+
+            schema->columns = std::move(columns);
+            components.create_table_schema = schema;
+        } else {
+            throw std::invalid_argument("Invalid CREATE TABLE syntax");
+        }
     } else {
         throw std::invalid_argument("Invalid query type provided");
     }
@@ -2379,28 +2420,49 @@ public:
         std::cout << "Welcome to BuzzDB CLI!\n";
         std::cout << "Enter SQL queries or type 'exit' to quit.\n";
         std::cout << "Example queries:\n";
-        std::cout << "  SELECT * FROM system_class\n";
-        std::cout << "  INSERT INTO test_table_2 VALUES (5, 'hello')\n";
-        std::cout << "  SELECT id, name FROM system_class WHERE id > 1\n\n";
+        std::cout << "  SELECT * FROM system_class;\n";
+        std::cout << "  INSERT INTO test_table_2 VALUES (5, 'hello');\n";
+        std::cout << "  SELECT id, name FROM system_class WHERE id > 1;\n\n";
+        std::cout << "Queries must end with a semicolon (;)\n";
+        std::cout << "For multi-line queries, press Enter to continue typing\n\n";
 
         std::string query;
+        std::string line;
+        bool is_new_query = true;
         while (true) {
-            std::cout << "buzzdb> ";
-            std::getline(std::cin, query);
+            if (is_new_query) {
+                std::cout << "buzzdb> ";
+                is_new_query = false;
+            } else {
+                std::cout << "     -> "; // Show continuation prompts
+            }
+            std::getline(std::cin, line);
 
-            if (query == "exit" || query == "q" || query == "quit") {
+            if (line == "exit" || line == "q" || line == "quit") {
                 break;
             }
 
-            if (query.empty()) {
+            if (line.empty()) {
                 continue;
             }
 
-            try {
-                auto components = parse_query(table_manager, query);
-                execute_query(table_manager, buffer_manager, components);
-            } catch (const std::exception& e) {
-                std::cerr << "Error: " << e.what() << std::endl;
+            query += " " + line;
+
+            // Check if query ends with semicolon
+            if (line.find(';') != std::string::npos) {
+                // Remove leading whitespace
+                query = query.substr(query.find_first_not_of(" \t\n\r\f\v"));
+                // Remove the semicolon before parsing
+                query = query.substr(0, query.find_first_of(";"));
+
+                try {
+                    auto components = parse_query(table_manager, query);
+                    execute_query(table_manager, buffer_manager, components);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: " << e.what() << std::endl;
+                }
+                query.clear(); // Reset for next query
+                is_new_query = true;
             }
         }
         std::cout << "Goodbye!\n";
