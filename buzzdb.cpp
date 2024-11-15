@@ -431,8 +431,9 @@ public:
     }
 };
 
-using TableID = uint16_t;
-using PageID = uint16_t;
+using TableID = size_t;
+using PageID = size_t;
+using SlotID = size_t;
 constexpr size_t MAX_FILE_STREAMS_IN_MEMORY = 2 << 10;
 
 class StorageManager {
@@ -751,7 +752,25 @@ public:
 };
 
 class Operator {
-    public:
+public:
+    struct TupleMetadata {
+        TableID table_id;
+        PageID page_id;
+        SlotID slot_id;
+
+        TupleMetadata(): table_id(std::numeric_limits<TableID>::max()), page_id(0), slot_id(0) {}
+        TupleMetadata(TableID table_id, PageID page_id, SlotID slot_id): table_id(table_id), page_id(page_id), slot_id(slot_id) {}
+        TupleMetadata(const TupleMetadata& other): table_id(other.table_id), page_id(other.page_id), slot_id(other.slot_id) {}
+        TupleMetadata& operator=(const TupleMetadata& other) {
+            table_id = other.table_id;
+            page_id = other.page_id;
+            slot_id = other.slot_id;
+            return *this;
+        }
+    };
+
+    TupleMetadata tuple_metadata;
+public:
     virtual ~Operator() = default;
 
     /// Initializes the operator.
@@ -829,7 +848,11 @@ public:
 
     std::vector<std::unique_ptr<Field>> get_output() override {
         if (current_tuple) {
-            return std::move(current_tuple->fields);
+            std::vector<std::unique_ptr<Field>> output_copy;
+            for (auto& field : current_tuple->fields) {
+                output_copy.push_back(field->clone());
+            }
+            return output_copy;
         }
         return {}; // Return an empty vector if no tuple is available
     }
@@ -851,6 +874,7 @@ private:
                     const char* tuple_data = page_buffer + slot_array[current_slot_index].offset;
                     std::istringstream iss(std::string(tuple_data, slot_array[current_slot_index].length));
                     current_tuple = Tuple::deserialize(iss);
+                    tuple_metadata = {table_id, current_page_index, current_slot_index};
                     current_slot_index++; // Move to the next slot for the next call
                     tuple_count++;
                     return; // Tuple loaded successfully
@@ -1035,6 +1059,7 @@ public:
                     // Assuming Field class has a clone method or copy constructor to duplicate fields
                     current_output.push_back(field->clone());
                 }
+                tuple_metadata = input->tuple_metadata;
                 has_next = true;
                 return true;
             }
@@ -1090,6 +1115,7 @@ class ProjectOperator : public UnaryOperator {
                 for (const auto& ind: attr_indexes) {
                     current_output.push_back(output[ind]->clone());
                 }
+                tuple_metadata = input->tuple_metadata;
                 has_next = true;
                 return true;
             }
@@ -1482,35 +1508,31 @@ public:
     }
 };
 
-class DeleteOperator : public Operator {
+class DeleteOperator : public UnaryOperator {
 private:
     BufferManager& buffer_manager;
-    TableID table_id;
-    size_t page_id;
-    size_t tuple_id;
 
 public:
-    DeleteOperator(BufferManager& manager, TableID table_id, size_t page_id, size_t tuple_id) 
-        : buffer_manager(manager), table_id(table_id), page_id(page_id), tuple_id(tuple_id) {}
+    DeleteOperator(std::unique_ptr<Operator> input, BufferManager& manager) 
+        : UnaryOperator(std::move(input)), buffer_manager(manager) {}
 
     void open() override {
-        // Not used in this context
+        input->open();
     }
 
     bool next() override {
-        auto& page = buffer_manager.get_page(table_id, page_id);
-        if (!page) {
-            std::cerr << "Page not found." << std::endl;
-            return false;
+        if (input->next()) {
+            auto [table_id, page_id, tuple_id] = input->tuple_metadata;
+            auto& page = buffer_manager.get_page(table_id, page_id);
+            page->delete_tuple(tuple_id); // Perform deletion
+            buffer_manager.flush_page(table_id, page_id); // Flush the page to disk after deletion
+            return true;
         }
-
-        page->delete_tuple(tuple_id); // Perform deletion
-        buffer_manager.flush_page(table_id, page_id); // Flush the page to disk after deletion
-        return true;
+        return false;
     }
 
     void close() override {
-        // Not used in this context
+        input->close();
     }
 
     std::vector<std::unique_ptr<Field>> get_output() override {
@@ -1806,6 +1828,7 @@ struct QueryComponents {
     enum class QueryType {
         SELECT,
         INSERT,
+        DELETE,
         CREATE_TABLE
     };
     QueryType type;
@@ -2213,6 +2236,70 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         } else {
             throw std::invalid_argument("Invalid CREATE TABLE syntax");
         }
+    } else if (query.substr(0, 6) == "DELETE") {
+        components.type = QueryComponents::QueryType::DELETE;
+
+        // Parse DELETE FROM query
+        std::regex delete_regex("DELETE FROM (\\w+)( WHERE \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*')(?: AND \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*'))*)?");
+        std::smatch delete_match;
+
+        if (std::regex_search(query, delete_match, delete_regex)) {
+            std::string table_name = delete_match[1].str();
+            components.table_id = table_manager.get_table_id(table_name);
+
+            auto table_schema = table_manager.get_table_schema(components.table_id);
+
+            // Parse WHERE clause if it exists
+            if (delete_match[2].matched) {
+                std::string where_clause = delete_match[2].str();
+                std::regex cond_regex("(\\w+) ([<>=]+) (\\d+|\\d+\\.\\d+|'[^']*')");
+                std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
+                std::sregex_iterator end;
+
+                for (auto it = begin; it != end; ++it) {
+                    std::string col_name = (*it)[1].str();
+                    size_t column_idx = table_schema->find_column_idx(col_name);
+                    if (column_idx == INVALID_VALUE) {
+                        throw std::invalid_argument("Column not found: " + col_name);
+                    }
+
+                    std::string op_str = (*it)[2].str();
+                    std::string value_str = (*it)[3].str();
+
+                    std::unique_ptr<Field> value;
+                    if (value_str[0] == '\'') {
+                        // String value
+                        value = std::make_unique<Field>(value_str.substr(1, value_str.length()-2));
+                    } else if (value_str.find('.') != std::string::npos) {
+                        // Float value
+                        value = std::make_unique<Field>(std::stof(value_str));
+                    } else {
+                        // Integer value
+                        value = std::make_unique<Field>(std::stoi(value_str));
+                    }
+
+                    if (table_schema->columns[column_idx]->type != value->type) {
+                        throw std::invalid_argument("Cannot compare values of different types");
+                    }
+
+                    SimplePredicate::ComparisonOperator op;
+                    if (op_str == "=") op = SimplePredicate::ComparisonOperator::EQ;
+                    else if (op_str == "<") op = SimplePredicate::ComparisonOperator::LT;
+                    else if (op_str == ">") op = SimplePredicate::ComparisonOperator::GT;
+                    else if (op_str == "<=") op = SimplePredicate::ComparisonOperator::LE;
+                    else if (op_str == ">=") op = SimplePredicate::ComparisonOperator::GE;
+                    else if (op_str == "<>") op = SimplePredicate::ComparisonOperator::NE;
+
+                    components.where_conditions.push_back({
+                        column_idx,
+                        op,
+                        std::move(value)
+                    });
+                }
+            }
+        } else {
+            throw std::invalid_argument("Invalid DELETE FROM syntax");
+        }
     } else {
         throw std::invalid_argument("Invalid query type provided");
     }
@@ -2269,7 +2356,7 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
         // Add final projection
         current_op = std::make_unique<ProjectOperator>(std::move(current_op), components.select_attributes);
         return current_op;
-    } else {
+    } else if (components.type == QueryComponents::QueryType::INSERT) {
         std::unique_ptr<Operator> current_op;
 
         if (components.insert_select_query) {
@@ -2290,7 +2377,30 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
             current_op = std::make_unique<InsertOperator>(std::move(values_op), buffer_manager, components.table_id);
         }
         return current_op;
+    } else if (components.type == QueryComponents::QueryType::DELETE) {
+        // Start with scan
+        std::unique_ptr<Operator> current_op = std::make_unique<ScanOperator>(buffer_manager, components.table_id);
+
+        // Add WHERE conditions if any
+        if (!components.where_conditions.empty()) {
+            auto complex_pred = std::make_unique<ComplexPredicate>(ComplexPredicate::LogicOperator::AND);
+            for (const auto& cond : components.where_conditions) {
+                auto simple_pred = std::make_unique<SimplePredicate>(
+                    SimplePredicate::Operand(cond.attribute_index),
+                    SimplePredicate::Operand(std::make_unique<Field>(*cond.value)),
+                    cond.op
+                );
+                complex_pred->add_predicate(std::move(simple_pred));
+            }
+            current_op = std::make_unique<SelectOperator>(std::move(current_op), std::move(complex_pred));
+        }
+
+        // Add final DELETE operator
+        current_op = std::make_unique<DeleteOperator>(std::move(current_op), buffer_manager);
+        return current_op;
     }
+
+    throw std::invalid_argument("Query type cannot be planned.");
 }
 
 void execute_query(TableManager& table_manager, BufferManager& buffer_manager, const QueryComponents& components) {
@@ -2460,8 +2570,6 @@ public:
         std::cout << "  SELECT * FROM system_class;\n";
         std::cout << "  INSERT INTO test_table_2 VALUES (5, 'hello');\n";
         std::cout << "  SELECT id, name FROM system_class WHERE id > 1;\n\n";
-        std::cout << "Queries must end with a semicolon (;)\n";
-        std::cout << "For multi-line queries, press Enter to continue typing\n\n";
 
         std::string query;
         std::string line;
