@@ -7,6 +7,7 @@
 #include <cassert>
 #include <format>
 #include <cstring>
+#include <filesystem>
 
 #include <list>
 #include <unordered_map>
@@ -371,8 +372,9 @@ void print_list(std::string list_name, const std::list<T>& myList) {
 template <typename T>
 class Policy {
 public:
-    virtual bool touch(T page_id) = 0;
+    virtual bool touch(T id) = 0;
     virtual T evict() = 0;
+    virtual bool erase(T id) = 0;
     virtual ~Policy() = default;
 };
 
@@ -428,6 +430,15 @@ public:
             lru_list.pop_back();
         }
         return evictedId;
+    }
+
+    bool erase(T id) override {
+        if (map.find(id) != map.end()) {
+            lru_list.erase(map[id]);
+            map.erase(id);
+            return true;
+        }
+        return false;
     }
 };
 
@@ -520,6 +531,18 @@ public:
         return res;
     }
 
+    bool delete_file(TableID table_id) {
+        if (!file_exists(table_id)) {
+            return true;
+        }
+
+        file_stream_map.erase(table_id);
+        num_pages_map.erase(table_id);
+        policy->erase(table_id);
+        std::string database_filename = get_database_filename(table_id);
+        return std::filesystem::remove(database_filename);
+    }
+
     // Read a page from disk
     std::unique_ptr<SlottedPage> load(TableID table_id, PageID page_id) {
         std::fstream& file_stream = check_and_load_stream(table_id);
@@ -609,6 +632,21 @@ public:
 
     bool file_exists(TableID table_id) {
         return storage_manager.file_exists(table_id);
+    }
+
+    bool delete_file(TableID table_id) {
+        std::vector<TablePageIDs> remove_keys;
+        for (auto& [key, _] : page_map) {
+            if (key.table_id == table_id) {
+                remove_keys.push_back(key);
+            }
+        }
+
+        for (auto& key : remove_keys) {
+            page_map.erase(key);
+            policy->erase(key);
+        }
+        return storage_manager.delete_file(table_id);
     }
 
     std::unique_ptr<SlottedPage>& get_page(TableID table_id, PageID page_id) {
@@ -1755,8 +1793,11 @@ public:
 
         // Traverse through system_class and get all metadata for given table_id
         std::string table_metadata_query = std::format("SELECT name FROM system_class WHERE id = {}", table_id);
-        auto table_metadata_tuple = std::move(plan_and_execute_internal_query(buffer_manager, *this, table_metadata_query)[0]);
-        std::string name = table_metadata_tuple->fields[0]->as_string();
+        auto table_metadata_tuples = plan_and_execute_internal_query(buffer_manager, *this, table_metadata_query);
+        if (table_metadata_tuples.size() == 0) {
+            throw std::invalid_argument("Failed to fetch table schema from disk: id=" + std::to_string(table_id) + " :: Table does not exist.");
+        }
+        std::string name = table_metadata_tuples[0]->fields[0]->as_string();
         std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
 
         // Traverse through system_column and get all column metadata for given table_id
@@ -1815,12 +1856,43 @@ public:
         auto insert_system_column_res = plan_and_execute_internal_query(buffer_manager, *this, insert_system_column_query.str());
         assert(insert_system_column_res.size() == table_schema->columns.size());
         table_schema->id = table_id;
+        buffer_manager.extend(table_id);
 
         return true;
     }
 
     bool create_table(std::shared_ptr<TableSchema> table_schema) {
         return create_table(table_schema, false);
+    }
+
+    bool drop_table(std::string name) {
+        TableID table_id;
+        if ((table_id = get_table_id(name)) == std::numeric_limits<TableID>::max()) {
+            throw std::invalid_argument("Failed to drop table: name=" + name + " :: Table does not exist.");
+        }
+        return drop_table(table_id);
+    }
+
+    bool drop_table(TableID table_id) {
+        // Check if table exists in system_class
+        std::string table_metadata_query = std::format("SELECT name FROM system_class WHERE id = {}", table_id);
+        auto table_metadata_tuples = plan_and_execute_internal_query(buffer_manager, *this, table_metadata_query);
+        if (table_metadata_tuples.size() == 0) {
+            throw std::invalid_argument("Failed to drop table: id=" + std::to_string(table_id) + " :: Table does not exist.");
+        }
+        std::string table_name = table_metadata_tuples[0]->fields[0]->as_string();
+
+        std::string system_class_delete_query = std::format("DELETE FROM system_class WHERE id = {}", table_id);
+        plan_and_execute_internal_query(buffer_manager, *this, system_class_delete_query);
+        std::string system_column_delete_query = std::format("DELETE FROM system_column WHERE table_id = {}", table_id);
+        plan_and_execute_internal_query(buffer_manager, *this, system_column_delete_query);
+
+        name_map.erase(table_name);
+        name_policy->erase(table_name);
+        schema_map.erase(table_id);
+        schema_policy->erase(table_id);
+        buffer_manager.delete_file(table_id);
+        return true;
     }
 };
 
@@ -1829,7 +1901,8 @@ struct QueryComponents {
         SELECT,
         INSERT,
         DELETE,
-        CREATE_TABLE
+        CREATE_TABLE,
+        DROP_TABLE
     };
     QueryType type;
 
@@ -2105,6 +2178,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             // Get table name
             std::string table_name = insert_match[1].str();
             components.table_id = table_manager.get_table_id(table_name);
+            if (components.table_id == std::numeric_limits<TableID>::max()) {
+                throw std::invalid_argument("Table does not exist: " + table_name);
+            }
             auto table_schema = table_manager.get_table_schema(components.table_id);
 
             // Parse column names if specified
@@ -2195,47 +2271,6 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         } else {
             throw std::invalid_argument("Invalid INSERT query syntax");
         }
-    } else if (query.substr(0, 12) == "CREATE TABLE") {
-        components.type = QueryComponents::QueryType::CREATE_TABLE;
-        components.is_ddl = true;
-
-        // Parse CREATE TABLE query
-        std::regex create_table_regex("CREATE TABLE (\\w+)\\s*\\((.*?)\\)");
-        std::smatch create_table_match;
-
-        if (std::regex_search(query, create_table_match, create_table_regex)) {
-            std::string table_name = create_table_match[1].str();
-            std::string columns_str = create_table_match[2].str();
-
-            // Create new table schema
-            auto schema = std::make_shared<TableSchema>(table_name);
-            TableColumns columns;
-
-            // Parse column definitions
-            std::regex column_regex("(\\w+)\\s+(INT|STRING|FLOAT)(?:\\s+NOT\\s+NULL)?");
-            std::sregex_iterator column_begin(columns_str.begin(), columns_str.end(), column_regex);
-            std::sregex_iterator column_end;
-
-            ColumnID idx = 0;
-            for (auto it = column_begin; it != column_end; ++it) {
-                std::string col_name = (*it)[1].str();
-                std::string type_str = (*it)[2].str();
-                bool not_null = it->str().find("NOT NULL") != std::string::npos;
-
-                FieldType type;
-                if (type_str == "INT") type = FieldType::INT;
-                else if (type_str == "STRING") type = FieldType::STRING;
-                else if (type_str == "FLOAT") type = FieldType::FLOAT;
-                else throw std::invalid_argument("Invalid column type: " + type_str);
-
-                columns.push_back(std::make_unique<TableColumn>(col_name, idx++, type, not_null));
-            }
-
-            schema->columns = std::move(columns);
-            components.create_table_schema = schema;
-        } else {
-            throw std::invalid_argument("Invalid CREATE TABLE syntax");
-        }
     } else if (query.substr(0, 6) == "DELETE") {
         components.type = QueryComponents::QueryType::DELETE;
 
@@ -2246,6 +2281,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         if (std::regex_search(query, delete_match, delete_regex)) {
             std::string table_name = delete_match[1].str();
             components.table_id = table_manager.get_table_id(table_name);
+            if (components.table_id == std::numeric_limits<TableID>::max()) {
+                throw std::invalid_argument("Table does not exist: " + table_name);
+            }
 
             auto table_schema = table_manager.get_table_schema(components.table_id);
 
@@ -2299,6 +2337,62 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             }
         } else {
             throw std::invalid_argument("Invalid DELETE FROM syntax");
+        }
+    } else if (query.substr(0, 12) == "CREATE TABLE") {
+        components.type = QueryComponents::QueryType::CREATE_TABLE;
+        components.is_ddl = true;
+
+        // Parse CREATE TABLE query
+        std::regex create_table_regex("CREATE TABLE (\\w+)\\s*\\((.*?)\\)");
+        std::smatch create_table_match;
+
+        if (std::regex_search(query, create_table_match, create_table_regex)) {
+            std::string table_name = create_table_match[1].str();
+            std::string columns_str = create_table_match[2].str();
+
+            // Create new table schema
+            auto schema = std::make_shared<TableSchema>(table_name);
+            TableColumns columns;
+
+            // Parse column definitions
+            std::regex column_regex("(\\w+)\\s+(INT|STRING|FLOAT)(?:\\s+NOT\\s+NULL)?");
+            std::sregex_iterator column_begin(columns_str.begin(), columns_str.end(), column_regex);
+            std::sregex_iterator column_end;
+
+            ColumnID idx = 0;
+            for (auto it = column_begin; it != column_end; ++it) {
+                std::string col_name = (*it)[1].str();
+                std::string type_str = (*it)[2].str();
+                bool not_null = it->str().find("NOT NULL") != std::string::npos;
+
+                FieldType type;
+                if (type_str == "INT") type = FieldType::INT;
+                else if (type_str == "STRING") type = FieldType::STRING;
+                else if (type_str == "FLOAT") type = FieldType::FLOAT;
+                else throw std::invalid_argument("Invalid column type: " + type_str);
+
+                columns.push_back(std::make_unique<TableColumn>(col_name, idx++, type, not_null));
+            }
+
+            schema->columns = std::move(columns);
+            components.create_table_schema = schema;
+        } else {
+            throw std::invalid_argument("Invalid CREATE TABLE syntax");
+        }
+    } else if (query.substr(0, 10) == "DROP TABLE") {
+        components.type = QueryComponents::QueryType::DROP_TABLE;
+        components.is_ddl = true;
+
+        // Parse DROP TABLE query
+        std::regex drop_table_regex("DROP TABLE (\\w+)");
+        std::smatch drop_table_match;
+
+        if (std::regex_search(query, drop_table_match, drop_table_regex)) {
+            std::string table_name = drop_table_match[1].str();
+            components.table_id = table_manager.get_table_id(table_name);
+            if (components.table_id == std::numeric_limits<TableID>::max()) {
+                throw std::invalid_argument("Table does not exist: " + table_name);
+            }
         }
     } else {
         throw std::invalid_argument("Invalid query type provided");
@@ -2415,6 +2509,9 @@ void execute_query(TableManager& table_manager, BufferManager& buffer_manager, c
         switch (components.type) {
             case QueryComponents::QueryType::CREATE_TABLE:
                 table_manager.create_table(components.create_table_schema);
+                break;
+            case QueryComponents::QueryType::DROP_TABLE:
+                table_manager.drop_table(components.table_id);
                 break;
             default:
                 throw std::invalid_argument("Query is not of DDL type.");
