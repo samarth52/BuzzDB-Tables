@@ -1194,7 +1194,7 @@ public:
             // Process aggregation functions
             if (!hash_table.count(group_keys)) {
                 // Initialize aggregate values for a new group
-                std::vector<Field> aggr_values(aggr_funcs.size(), Field(0)); // Assuming Field(int) initializes an integer Field
+                std::vector<Field> aggr_values(aggr_funcs.size(), Field());
                 hash_table[group_keys] = aggr_values;
             }
 
@@ -1259,6 +1259,30 @@ public:
 private:
 
     Field update_aggregate(const AggrFunc& aggr_func, const Field& current_aggr, const Field& new_value) {
+        if (new_value.get_type() == FieldType::NULLV) {
+            return *current_aggr.clone();
+        }
+
+        if (current_aggr.get_type() == FieldType::NULLV) {
+            switch (aggr_func.func) {
+                case AggrFuncType::COUNT: {
+                    return Field(1);
+                }
+                case AggrFuncType::SUM: {
+                    if (new_value.get_type() == FieldType::STRING) {
+                        return Field("");
+                    }
+                    return *new_value.clone();
+                }
+                case AggrFuncType::MAX:
+                case AggrFuncType::MIN: {
+                    return *new_value.clone();
+                }
+                default:
+                    throw std::runtime_error("Unsupported aggregation function.");
+            }
+        }
+
         if (current_aggr.get_type() != new_value.get_type()) {
             throw std::runtime_error("Mismatched Field types in aggregation.");
         }
@@ -1279,6 +1303,8 @@ private:
                 } else if (current_aggr.get_type() == FieldType::FLOAT) {
                     float sum = current_aggr.as_float() + new_value.as_float();
                     return Field(sum);
+                } else if (current_aggr.get_type() == FieldType::STRING) {
+                    return Field("");
                 }
                 break;
             }
@@ -1289,6 +1315,9 @@ private:
                 } else if (current_aggr.get_type() == FieldType::FLOAT) {
                     float max = std::max(current_aggr.as_float(), new_value.as_float());
                     return Field(max);
+                } else if (current_aggr.get_type() == FieldType::STRING) {
+                    std::string max = std::max(current_aggr.as_string(), new_value.as_string());
+                    return Field(max);
                 }
                 break;
             }
@@ -1298,6 +1327,9 @@ private:
                     return Field(min);
                 } else if (current_aggr.get_type() == FieldType::FLOAT) {
                     float min = std::min(current_aggr.as_float(), new_value.as_float());
+                    return Field(min);
+                } else if (current_aggr.get_type() == FieldType::STRING) {
+                    std::string min = std::min(current_aggr.as_string(), new_value.as_string());
                     return Field(min);
                 }
                 break;
@@ -1502,6 +1534,7 @@ public:
     bool not_null;
 
 public:
+    TableColumn(std::string name, ColumnID idx, FieldType type) : name(name), idx(idx), type(type), not_null(false) {}
     TableColumn(std::string name, ColumnID idx, FieldType type, bool not_null) : name(name), idx(idx), type(type), not_null(not_null) {}
 
     friend std::ostream& operator<<(std::ostream& os, TableColumn const& column) {
@@ -1779,7 +1812,7 @@ struct QueryComponents {
 
     // Common components
     TableID table_id;
-    std::vector<std::string> output_column_names;
+    std::vector<TableColumn> output_columns;
     bool is_ddl = false;
 
     // SELECT components
@@ -1873,10 +1906,10 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
 
                 if (item == "*") {
                     for (auto& column : table_schema->columns) {
-                        components.output_column_names.push_back(column->name);
+                        components.output_columns.push_back({column->name, (ColumnID) components.output_columns.size(), column->type});
                     }
                 } else {
-                    components.output_column_names.push_back(item);
+                    components.output_columns.push_back({item, (ColumnID) components.output_columns.size(), NULLV});
                 }
 
                 // Check if it's an aggregate function
@@ -1898,6 +1931,12 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     else if (func_name == "MAX") func_type = AggrFuncType::MAX;
                     else throw std::invalid_argument("Unknown aggregate function: " + func_name);
 
+                    if (func_type == AggrFuncType::COUNT) {
+                        components.output_columns.back().type = INT;
+                    } else {
+                        components.output_columns.back().type = table_schema->columns[column_idx]->type;
+                    }
+
                     components.aggregates.push_back({func_type, column_idx});
                 } else if (item == "*") {
                     // All columns
@@ -1907,6 +1946,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                             throw std::invalid_argument(column_it->get()->name + " is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
                         }
                         column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                        components.output_columns.back().type = table_schema->columns[column_idx]->type;
                         column_it++;
                     }
                 } else {
@@ -1919,6 +1959,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                         throw std::invalid_argument("Column not found: " + item);
                     }
                     column_ref_idxs.push_back({column_idx, column_ref_idxs.size() + components.aggregates.size()});
+                    components.output_columns.back().type = table_schema->columns[column_idx]->type;
                 }
             }
 
@@ -2176,6 +2217,10 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         throw std::invalid_argument("Invalid query type provided");
     }
 
+    if (query.substr(0, 6) != "SELECT") {
+        components.output_columns.push_back({"SUCCESS", 0, NULLV});
+    }
+
     return components;
 }
 
@@ -2250,9 +2295,13 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
 }
 
 void execute_query(TableManager& table_manager, BufferManager& buffer_manager, const QueryComponents& components) {
-    const auto& print_num_rows = [&](int num_rows) {
-        std::cout << std::format("({} row{})\n\n", num_rows, num_rows == 1 ? "" : "s");
-    };
+    // Get column widths by examining first row
+    std::vector<size_t> col_widths;
+    std::vector<std::vector<std::string>> rows;
+
+    for (const auto& column : components.output_columns) {
+        col_widths.push_back(column.name.length());
+    }
 
     if (components.is_ddl) {
         switch (components.type) {
@@ -2262,45 +2311,25 @@ void execute_query(TableManager& table_manager, BufferManager& buffer_manager, c
             default:
                 throw std::invalid_argument("Query is not of DDL type.");
         }
-        print_num_rows(0);
-        return;
-    }
+    } else {
+        std::unique_ptr<Operator> root_op = plan_query(components, buffer_manager);
+        root_op->open();
+        while (root_op->next()) {
+            const auto& output = root_op->get_output();
+            std::vector<std::string> row;
 
-    std::unique_ptr<Operator> root_op = plan_query(components, buffer_manager);
-    
-    // Get column widths by examining first row
-    std::vector<size_t> col_widths;
-    std::vector<std::vector<std::string>> rows;
+            // Convert each field to string and track max width
+            for (const auto& field : output) {
+                std::stringstream ss;
+                field->print(ss);
+                std::string val = ss.str();
+                row.push_back(val);
 
-    bool has_empty_rows = true;
-
-    for (const auto& column_name : components.output_column_names) {
-        col_widths.push_back(column_name.length());
-    }
-    
-    root_op->open();
-    while (root_op->next()) {
-        const auto& output = root_op->get_output();
-        std::vector<std::string> row;
-
-        has_empty_rows = has_empty_rows && output.size() == 0;
-        
-        // Convert each field to string and track max width
-        for (const auto& field : output) {
-            std::stringstream ss;
-            field->print(ss);
-            std::string val = ss.str();
-            row.push_back(val);
-            
-            col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
+                col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
+            }
+            rows.push_back(std::move(row));
         }
-        rows.push_back(std::move(row));
-    }
-    root_op->close();
-
-    if (has_empty_rows) {
-        print_num_rows(rows.size());
-        return;
+        root_op->close();
     }
 
     const auto& print_row_separator = [&] {
@@ -2317,14 +2346,19 @@ void execute_query(TableManager& table_manager, BufferManager& buffer_manager, c
         std::cout << "|\n";
     };
 
+    std::vector<std::string> output_column_names;
+    std::for_each(components.output_columns.begin(), components.output_columns.end(), [&](const TableColumn& col) { output_column_names.push_back(col.name); });
+
     print_row_separator();
-    print_row(components.output_column_names);
+    print_row(output_column_names);
     print_row_separator();
-    for (const auto& row : rows) {
-        print_row(row);
+    if (components.type == QueryComponents::QueryType::SELECT && rows.size() > 0) {
+        for (const auto& row : rows) {
+            print_row(row);
+        }
+        print_row_separator();
     }
-    print_row_separator();
-    print_num_rows(rows.size());
+    std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
 }
 
 std::vector<std::unique_ptr<Tuple>> plan_and_execute_internal_query(
