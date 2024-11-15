@@ -459,7 +459,7 @@ private:
         file_stream_map[table_id] = std::move(file_stream);
         num_pages_map[table_id] = num_pages;
 
-        std::cout << "Storage Manager :: Table ID: " << table_id << " :: Num pages: " << num_pages << "\n";        
+        // std::cout << "Storage Manager :: Table ID: " << table_id << " :: Num pages: " << num_pages << "\n";        
         if(num_pages == 0){
             extend(table_id);
         }
@@ -543,7 +543,7 @@ public:
 
     // Extend database file by one page
     void extend(TableID table_id) {
-        std::cout << "Extending database file :: Table ID: " << table_id << "\n";
+        // std::cout << "Extending database file :: Table ID: " << table_id << "\n";
         std::fstream& file_stream = check_and_load_stream(table_id);
 
         // Create a slotted page
@@ -618,7 +618,7 @@ public:
         if (page_map.size() >= MAX_PAGES_IN_MEMORY) {
             auto evicted_tp_ids = policy->evict();
             if(evicted_tp_ids.table_id != INVALID_VALUE){
-                std::cout << "Evicting Table ID: " << evicted_tp_ids.table_id << " :: Page ID: " << evicted_tp_ids.page_id << "\n";
+                // std::cout << "Evicting Table ID: " << evicted_tp_ids.table_id << " :: Page ID: " << evicted_tp_ids.page_id << "\n";
                 storage_manager.flush(evicted_tp_ids.table_id, evicted_tp_ids.page_id, page_map[evicted_tp_ids]);
                 page_map[evicted_tp_ids].reset();
                 page_map.erase(evicted_tp_ids);
@@ -627,7 +627,7 @@ public:
 
         auto page = storage_manager.load(table_id, page_id);
         policy->touch(tp_ids);
-        std::cout << "Loading Table ID: " << table_id << " :: Page ID: " << page_id <<  "\n";
+        // std::cout << "Loading Table ID: " << table_id << " :: Page ID: " << page_id <<  "\n";
         page_map[tp_ids] = std::move(page);
         return page_map[tp_ids];
     }
@@ -816,7 +816,7 @@ public:
     }
 
     void close() override {
-        std::cout << "Scan Operator tuple_count: " << tuple_count << "\n";
+        // std::cout << "Scan Operator tuple_count: " << tuple_count << "\n";
         current_page_index = 0;
         current_slot_index = 0;
         current_tuple.reset();
@@ -1650,7 +1650,7 @@ public:
 
     TableID get_table_id(std::string name) {
         if (name_map.find(name) != name_map.end()) {
-            std::cout << "Fetched table id from cache: id=" << name_map[name] << " :: name=" << name << std::endl;
+            // std::cout << "Fetched table id from cache: id=" << name_map[name] << " :: name=" << name << std::endl;
             name_policy->touch(name);
             return name_map[name];
         }
@@ -1666,13 +1666,13 @@ public:
         if (name_map.size() >= MAX_NAMES_IN_MEMORY) {
             auto evicted_name = name_policy->evict();
             if (evicted_name != "" && name_map[evicted_name] >= NUM_SYSTEM_TABLES) {
-                std::cout << "Evicted table id from cache: id=" << name_map[evicted_name] << " :: name=" << evicted_name << std::endl;
+                // std::cout << "Evicted table id from cache: id=" << name_map[evicted_name] << " :: name=" << evicted_name << std::endl;
                 name_map.erase(evicted_name);
             }
         }
         name_policy->touch(name);
         name_map[name] = table_id;
-        std::cout << "Fetched table id from disk: id=" << name_map[name] << " :: name=" << name << std::endl;
+        // std::cout << "Fetched table id from disk: id=" << name_map[name] << " :: name=" << name << std::endl;
         return table_id;
     }
 
@@ -1686,7 +1686,7 @@ public:
 
     std::shared_ptr<TableSchema> get_table_schema(TableID table_id) {
         if (schema_map.find(table_id) != schema_map.end()) {
-            std::cout << "Fetched table schema from cache: id=" << table_id << std::endl;
+            // std::cout << "Fetched table schema from cache: id=" << table_id << std::endl;
             auto table_schema = schema_map[table_id];
             if (table_id >= NUM_SYSTEM_TABLES) {
                 schema_policy->touch(table_id);
@@ -1716,13 +1716,13 @@ public:
         if (schema_map.size() >= MAX_SCHEMAS_IN_MEMORY) {
             TableID evicted_table_id = schema_policy->evict();
             if (evicted_table_id != INVALID_VALUE && evicted_table_id >= NUM_SYSTEM_TABLES) {
-                std::cout << "Evicted table id from cache: id=" << evicted_table_id << std::endl;
+                // std::cout << "Evicted table id from cache: id=" << evicted_table_id << std::endl;
                 schema_map.erase(evicted_table_id);
             }
         }
         schema_map[table_id] = table_schema;
         schema_policy->touch(table_id);
-        std::cout << "Fetched table schema from disk: id=" << table_id << std::endl;
+        // std::cout << "Fetched table schema from disk: id=" << table_id << std::endl;
         return table_schema;
     }
 
@@ -2204,7 +2204,7 @@ std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
     TableManager& table_manager,
     const std::string& query
 ) {
-    std::cout << "Executing sub-query :: " << query << std::endl;
+    // std::cout << "Executing sub-query :: " << query << std::endl;
     auto components = parse_query(table_manager, query);
     auto root_op = plan_query(components, buffer_manager);
     std::vector<std::unique_ptr<Tuple>> output_copy;
@@ -2257,41 +2257,6 @@ public:
         // Storage Manager automatically created
     }
 
-    // // insert function
-    // void insert(int key, int value) {
-    //     tuple_insertion_attempt_counter += 1;
-
-    //     // Create a new tuple with the given key and value
-    //     auto new_tuple = std::make_unique<Tuple>();
-
-    //     auto key_field = std::make_unique<Field>(key);
-    //     auto value_field = std::make_unique<Field>(value);
-    //     float float_val = 132.04;
-    //     auto float_field = std::make_unique<Field>(float_val);
-    //     auto string_field = std::make_unique<Field>("buzzdb");
-
-    //     new_tuple->add_field(std::move(key_field));
-    //     new_tuple->add_field(std::move(value_field));
-    //     new_tuple->add_field(std::move(float_field));
-    //     new_tuple->add_field(std::move(string_field));
-
-    //     InsertOperator insert_op(buffer_manager, 10);
-    //     insert_op.set_tuple_to_insert(std::move(new_tuple));
-    //     bool status = insert_op.next();
-
-    //     assert(status == true);
-
-    //     // if (tuple_insertion_attempt_counter % 10 != 0) {
-    //     //     // Assuming you want to delete the first tuple from the first page
-    //     //     DeleteOperator del_op(buffer_manager, 0, 0); 
-    //     //     if (!del_op.next()) {
-    //     //         std::cerr << "Failed to delete tuple." << std::endl;
-    //     //     }
-    //     // }
-
-
-    // }
-
     void execute_queries() {
 
         std::vector<std::string> test_queries = {
@@ -2324,27 +2289,47 @@ public:
             //pretty_print(components);
             execute_query(components, buffer_manager);
         }
-
     }
-    
+
+    void start_cli() {
+        std::cout << "Welcome to BuzzDB CLI!\n";
+        std::cout << "Enter SQL queries or type 'exit' to quit.\n";
+        std::cout << "Example queries:\n";
+        std::cout << "  SELECT * FROM system_class\n";
+        std::cout << "  INSERT INTO test_table_2 VALUES (5, 'hello')\n";
+        std::cout << "  SELECT id, name FROM system_class WHERE id > 1\n\n";
+
+        std::string query;
+        while (true) {
+            std::cout << "buzzdb> ";
+            std::getline(std::cin, query);
+
+            if (query == "exit" || query == "q" || query == "quit") {
+                break;
+            }
+
+            if (query.empty()) {
+                continue;
+            }
+
+            try {
+                auto components = parse_query(table_manager, query);
+                execute_query(components, buffer_manager);
+            } catch (const std::exception& e) {
+                std::cerr << "Error: " << e.what() << std::endl;
+            }
+        }
+        std::cout << "Goodbye!\n";
+    }
 };
 
 int main() {
-
     BuzzDB db;
-
-    std::ifstream input_file("output.txt");
-
-    if (!input_file) {
-        std::cerr << "Unable to open file" << std::endl;
-        return 1;
-    }
 
     auto schema1 = db.table_manager.get_table_schema(SYSTEM_CLASS_TABLE_ID);
     auto schema2 = db.table_manager.get_table_schema("system_column");
-    std::cout << *schema1 << std::endl;
-    std::cout << *schema2 << std::endl;
-
+    // std::cout << *schema1 << std::endl;
+    // std::cout << *schema2 << std::endl;
 
     std::shared_ptr<TableSchema> new_schema = std::make_shared<TableSchema>("test_table");
     new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT, true));
@@ -2359,34 +2344,25 @@ int main() {
 
     // assert(create_table_res == true);
 
-    // std::cout << *new_schema << std::endl;
-
     auto schema3 = db.table_manager.get_table_schema("test_table");
     auto schema4 = db.table_manager.get_table_schema("test_table");
-    // std::cout << "here5: " << /new_schema->find_column_idx("hello") << std::endl;
-    // std::cout << "here6: " << schema3->find_column_idx("hello") << std::endl;
 
-    std::cout << *schema3 << std::endl;
-    std::cout << *schema4 << std::endl;
+    // std::cout << *schema3 << std::endl;
+    // std::cout << *schema4 << std::endl;
 
-    // int field1, field2;
-    // int i = 0;
-    // while (input_file >> field1 >> field2) {
-    //     db.insert(field1, field2);
-    // }
+    // auto start = std::chrono::high_resolution_clock::now();
 
-    auto start = std::chrono::high_resolution_clock::now();
+    // db.execute_queries();
 
-    db.execute_queries();
+    // auto end = std::chrono::high_resolution_clock::now();
 
-    auto end = std::chrono::high_resolution_clock::now();
-
-    // Calculate and print the elapsed time
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " << 
-    std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
-          << " microseconds" << std::endl;
-
+    // // Calculate and print the elapsed time
+    // std::chrono::duration<double> elapsed = end - start;
+    // std::cout << "Elapsed time: " << 
+    // std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count() 
+    //       << " microseconds" << std::endl;
+    
+    db.start_cli();
     
     return 0;
 }
