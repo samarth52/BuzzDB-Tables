@@ -920,12 +920,12 @@ public:
         }
 
         if (left_field == nullptr || right_field == nullptr) {
-            std::cerr << "Error: Invalid field reference.\n";
+            // std::cerr << "Error: Invalid field reference.\n";
             return false;
         }
 
         if (left_field->get_type() != right_field->get_type()) {
-            std::cerr << "Error: Comparing fields of different types.\n";
+            // std::cerr << "Error: Comparing fields of different types.\n";
             return false;
         }
 
@@ -1712,7 +1712,7 @@ public:
                 tuple->fields[0]->as_string(),
                 tuple->fields[1]->as_int(),
                 FieldType(tuple->fields[2]->as_int()),
-                tuple->fields[1]->as_int() == 0 ? false : true
+                tuple->fields[3]->as_int() == 0 ? false : true
             );
             table_schema->add_column(std::move(column));
         }
@@ -1827,6 +1827,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         if (std::regex_search(query, table_match, table_regex)) {
             std::string table_name = table_match[1].str();
             components.table_id = table_manager.get_table_id(table_name);
+            if (components.table_id == std::numeric_limits<TableID>::max()) {
+                throw std::invalid_argument("Table does not exist: " + table_name);
+            }
         } else {
             throw std::invalid_argument("Could not find table name in query");
         }
@@ -2105,10 +2108,10 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                         }
                     }
                     if (components.insert_columns.size() == 0 && field_idx != table_schema->columns.size()) {
-                        throw std::invalid_argument("Size of new tuple does not match the number of columns in schema");
+                        throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns in schema ({})", field_idx, table_schema->columns.size()));
                     }
                     if (components.insert_columns.size() != 0 && field_idx != components.insert_columns.size()) {
-                        throw std::invalid_argument("Size of new tuple does not match the number of columns in insert query");
+                        throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns in insert query ({})", field_idx, components.insert_columns.size()));
                     }
                     for (size_t i = 0; i < table_schema->columns.size(); i++) {
                         if (table_schema->columns[i]->not_null && tuple_fields[i]->type == NULLV) {
@@ -2459,7 +2462,7 @@ public:
                     auto components = parse_query(table_manager, query);
                     execute_query(table_manager, buffer_manager, components);
                 } catch (const std::exception& e) {
-                    std::cerr << "Error: " << e.what() << std::endl;
+                    std::cerr << "Error: " << e.what() << "\n\n";
                 }
                 query.clear(); // Reset for next query
                 is_new_query = true;
