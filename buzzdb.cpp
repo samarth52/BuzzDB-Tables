@@ -131,13 +131,17 @@ public:
         return std::make_unique<Field>(*this);
     }
 
-    void print() const{
+    void print(std::ostream& os) const{
         switch(get_type()){
-            case INT: std::cout << as_int(); break;
-            case FLOAT: std::cout << as_float(); break;
-            case STRING: std::cout << as_string(); break;
-            case NULLV: std::cout << "NULL"; break;
+            case INT: os << as_int(); break;
+            case FLOAT: os << as_float(); break;
+            case STRING: os << as_string(); break;
+            case NULLV: os << "NULL"; break;
         }
+    }
+
+    void print() const{
+        print(std::cout);
     }
 };
 
@@ -2185,18 +2189,60 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
 
 void execute_query(const QueryComponents& components, BufferManager& buffer_manager) {
     std::unique_ptr<Operator> root_op = plan_query(components, buffer_manager);
-    // Execute query
+    
+    // Get column widths by examining first row
+    std::vector<size_t> col_widths;
+    std::vector<std::vector<std::string>> rows;
+
+    bool has_empty_rows = true;
+    
     root_op->open();
     while (root_op->next()) {
         const auto& output = root_op->get_output();
+        std::vector<std::string> row;
+
+        has_empty_rows = has_empty_rows && output.size() == 0;
+        
+        // Convert each field to string and track max width
         for (const auto& field : output) {
-            field->print();
-            std::cout << " ";
+            std::stringstream ss;
+            field->print(ss);
+            std::string val = ss.str();
+            row.push_back(val);
+            
+            if (col_widths.size() < row.size()) {
+                col_widths.push_back(val.length());
+            } else {
+                col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
+            }
         }
-        std::cout << std::endl;
+        rows.push_back(std::move(row));
     }
     root_op->close();
-    std::cout << std::endl;
+
+    if (has_empty_rows) {
+        std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
+        return;
+    }
+
+    // Print table border
+    for (size_t width : col_widths) {
+        std::cout << '+' << std::string(width + 2, '-');
+    }
+    std::cout << "+\n";
+
+    // Print rows
+    for (const auto& row : rows) {
+        for (size_t i = 0; i < row.size(); i++) {
+            std::cout << "| " << std::left << std::setw(col_widths[i]) << row[i] << ' ';
+        }
+        std::cout << "|\n";
+    }
+    for (size_t width : col_widths) {
+        std::cout << '+' << std::string(width + 2, '-');
+    }
+    std::cout << "+\n";
+    std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
 }
 
 std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
