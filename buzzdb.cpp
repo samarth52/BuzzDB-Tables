@@ -18,7 +18,7 @@
 #include <regex>
 #include <stdexcept>
 
-enum FieldType { INT, FLOAT, STRING };
+enum FieldType { INT, FLOAT, STRING, NULLV };
 
 // Define a basic Field variant class that can hold different types
 class Field {
@@ -44,6 +44,15 @@ public:
         data_length = s.size() + 1;  // include null-terminator
         data = std::make_unique<char[]>(data_length);
         std::memcpy(data.get(), s.c_str(), data_length);
+    }
+
+    Field() : type(NULLV) {
+        data_length = 0;
+        data = std::make_unique<char[]>(data_length);
+        // std::string val = "NULL";
+        // data_length = val.size() + 1;
+        // data = std::make_unique<char[]>(data_length);
+        // std::memcpy(data.get(), val.c_str(), data_length);
     }
 
     Field& operator=(const Field& other) {
@@ -76,6 +85,9 @@ public:
     std::string as_string() const { 
         return std::string(data.get());
     }
+    std::nullptr_t as_null() const {
+        return nullptr;
+    }
 
     std::string serialize() {
         std::stringstream buffer;
@@ -107,6 +119,8 @@ public:
         } else if (type == FLOAT) {
             float val; in >> val;
             return std::make_unique<Field>(val);
+        } else if (type == NULLV) {
+            return std::make_unique<Field>();
         }
         return nullptr;
     }
@@ -122,6 +136,7 @@ public:
             case INT: std::cout << as_int(); break;
             case FLOAT: std::cout << as_float(); break;
             case STRING: std::cout << as_string(); break;
+            case NULLV: std::cout << "NULL"; break;
         }
     }
 };
@@ -136,6 +151,8 @@ bool operator==(const Field& lhs, const Field& rhs) {
             return *reinterpret_cast<const float*>(lhs.data.get()) == *reinterpret_cast<const float*>(rhs.data.get());
         case STRING:
             return std::string(lhs.data.get(), lhs.data_length - 1) == std::string(rhs.data.get(), rhs.data_length - 1);
+        case NULLV:
+            return true;
         default:
             throw std::runtime_error("Unsupported field type for comparison.");
     }
@@ -371,7 +388,7 @@ private:
 
 public:
 
-    LruPolicy(size_t cache_size, T invalid_value) : cache_size(cache_size), invalid_value(invalid_value) {}
+    LruPolicy(size_t cache_size, T invalid_value) : invalid_value(invalid_value), cache_size(cache_size) {}
 
     bool touch(T id) override {
         //print_list("LRU", lruList);
@@ -1340,7 +1357,7 @@ class ValuesIteratorOperator : public Operator {
 private:
     std::vector<std::unique_ptr<Tuple>> value_tuples;
 
-    int curr_count;
+    size_t curr_count;
     bool has_output;
 
 public:
@@ -1486,16 +1503,16 @@ public:
         return os << "Column idx=" << column.idx << " :: name=" << column.name << " :: type=" << column.type;
     }
 };
-using TableColumns = std::list<std::unique_ptr<TableColumn>>;
+using TableColumns = std::vector<std::unique_ptr<TableColumn>>;
 
 class TableSchema {
 private:
     void init() {
-        this->columns.sort([&](const std::unique_ptr<TableColumn>& column1, const std::unique_ptr<TableColumn>& column2) {
+        std::sort(this->columns.begin(), this->columns.end(), [&](const std::unique_ptr<TableColumn>& column1, const std::unique_ptr<TableColumn>& column2) {
             return column1->idx < column2->idx;
         });
-        for (auto it = this->columns.begin(); it != this->columns.end(); it++) {
-            columns_map[it->get()->name] = it;
+        for (auto& column : this->columns) {
+            columns_map[column->name] = column->idx;
         }
     }
 
@@ -1504,7 +1521,7 @@ public:
     TableID id;
     TableColumns columns;
 
-    std::unordered_map<std::string, TableColumns::iterator> columns_map;
+    std::unordered_map<std::string, ColumnID> columns_map;
 
 public:
     TableSchema(std::string name): name(name), id(std::numeric_limits<TableID>::max()) {}
@@ -1521,15 +1538,15 @@ public:
         auto it = std::upper_bound(columns.begin(), columns.end(), column->idx, [&](ColumnID idx, const std::unique_ptr<TableColumn>& c) {
             return idx < c->idx;
         });
-        auto new_it = columns.insert(it, std::move(column));
-        columns_map[column_name] = new_it;
+        columns.insert(it, std::move(column));
+        columns_map[column_name] = columns.back()->idx;
     }
 
     ColumnID find_column_idx(std::string name) {
         if (columns_map.find(name) == columns_map.end()) {
             return INVALID_VALUE;
         }
-        return columns_map[name]->get()->idx;
+        return columns_map[name];
     }
 
     friend std::ostream& operator<<(std::ostream& os, TableSchema const& table) {
@@ -1920,7 +1937,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     value = std::make_unique<Field>(std::stoi(value_str));
                 }
 
-                if (std::next(table_schema->columns.begin(), column_idx)->get()->type != value->type) {
+                if (table_schema->columns[column_idx]->type != value->type) {
                     throw std::invalid_argument("Cannot compare values of different types");
                 }
 
@@ -2010,7 +2027,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
 
             if (insert_match[3].str().substr(0, 6) == "VALUES") {
                 // Parse VALUES
-                std::string values_str = insert_match[0].str();
+                std::string values_str = insert_match[3].str();
                 std::regex value_regex("\\((.*?)\\)");
                 std::sregex_iterator value_begin(values_str.begin(), values_str.end(), value_regex);
                 std::sregex_iterator value_end;
@@ -2021,7 +2038,10 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     std::sregex_iterator field_begin(tuple_values.begin(), tuple_values.end(), field_regex);
                     std::sregex_iterator field_end;
 
-                    std::vector<std::unique_ptr<Field>> tuple_fields;
+                    std::vector<std::unique_ptr<Field>> tuple_fields(table_schema->columns.size());
+                    for (size_t i = 0; i < tuple_fields.size(); i++) {
+                        tuple_fields[i] = std::make_unique<Field>();
+                    }
                     size_t field_idx = 0;
                     for (auto field_it = field_begin; field_it != field_end; ++field_it, ++field_idx) {
                         std::string value = field_it->str();
@@ -2029,34 +2049,36 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                         value.erase(0, value.find_first_not_of(" \t"));
                         value.erase(value.find_last_not_of(" \t") + 1);
 
-                        FieldType field_type;
-                        auto& columns = table_schema->columns;
+                        size_t column_idx = field_idx;
 
-                        // TODO: Add validation and reordering for queries of type INSERT INTO <table_name> (<col1>, <col2>) ...
-                        // if (components.insert_columns.empty()) {
-                        field_type = std::next(columns.begin(), field_idx)->get()->type;
-                        // } else {
-                        //     size_t column_idx = table_schema->find_column_idx(components.insert_columns[field_idx]);
-                        //     field_type = std::next(columns.begin(), column_idx)->get()->type;
-                        // }
+                        if (!components.insert_columns.empty()) {
+                            size_t column_idx = table_schema->find_column_idx(components.insert_columns[field_idx]);
+                            if (column_idx == INVALID_VALUE) {
+                                throw std::invalid_argument("Column not found: " + components.insert_columns[field_idx]);
+                            }
+                        }
+
+                        FieldType field_type = table_schema->columns[column_idx]->type;
 
                         switch (field_type) {
                             case FieldType::INT:
-                                tuple_fields.push_back(std::make_unique<Field>(std::stoi(value)));
+                                tuple_fields[column_idx] = std::make_unique<Field>(std::stoi(value));
                                 break;
                             case FieldType::FLOAT:
-                                tuple_fields.push_back(std::make_unique<Field>(std::stof(value)));
+                                tuple_fields[column_idx] = std::make_unique<Field>(std::stof(value));
                                 break;
                             case FieldType::STRING:
                                 // Remove quotes if present
                                 if (value.front() == '"' || value.front() == '\'') {
                                     value = value.substr(1, value.length() - 2);
                                 }
-                                tuple_fields.push_back(std::make_unique<Field>(value));
+                                tuple_fields[column_idx] = std::make_unique<Field>(value);
                                 break;
+                            default:
+                                throw std::invalid_argument("Field not implemented");
                         }
                     }
-                    if (tuple_fields.size() != table_schema->columns.size()) {
+                    if (components.insert_columns.size() == 0 && field_idx != table_schema->columns.size()) {
                         throw std::invalid_argument("Size of new tuple does not match the number of columns in schema");
                     }
                     components.insert_values.push_back(std::move(tuple_fields));
@@ -2267,10 +2289,11 @@ public:
             "INSERT INTO test_table_2 SELECT * FROM system_class",
             "SELECT * FROM test_table_2",
             "SELECT * FROM system_column WHERE name = 'name'",
-            "INSERT INTO test_table_2 VALUES (5, 'hello')",
-            "INSERT INTO test_table_2 VALUES (6, 'hello'), (7, 'bye'), (8, 'yo')",
-            // "INSERT INTO test_table_2 VALUES (9, 'hello'), (10, 'bye'), (11)",
             "SELECT id, name FROM system_class",
+            "INSERT INTO test_table_2 VALUES (5, 'hello')",
+            "INSERT INTO test_table_2 VALUES (6, 'bye'), (7, 'oh'), (8, 'yo')",
+            "INSERT INTO test_table_2 (id, name) VALUES (9, 1), (10, 2)",
+            // "INSERT INTO test_table_2 VALUES (9, 'hello'), (10, 'bye'), (11)",
             "SELECT name FROM system_class",
             "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
             "SELECT table_id, name, idx, data_type, * FROM system_column",
@@ -2279,6 +2302,8 @@ public:
             "SELECT id, name FROM system_class WHERE id <> 1",
             "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
             "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
+            "SELECT * FROM test_table_2",
+            "SELECT * FROM test_table_2 WHERE name = '2'",
         };
 
         for (const auto& query : test_queries) {
