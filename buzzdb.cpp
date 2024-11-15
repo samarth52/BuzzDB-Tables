@@ -1774,6 +1774,7 @@ struct QueryComponents {
 
     // Common components
     TableID table_id;
+    std::vector<std::string> output_column_names;
 
     // SELECT components
     std::vector<size_t> select_attributes;
@@ -1857,6 +1858,14 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             std::vector<std::pair<size_t, size_t>> column_ref_idxs;
             for (auto it = begin; it != end; ++it) {
                 std::string item = it->str();
+
+                if (item == "*") {
+                    for (auto& column : table_schema->columns) {
+                        components.output_column_names.push_back(column->name);
+                    }
+                } else {
+                    components.output_column_names.push_back(item);
+                }
 
                 // Check if it's an aggregate function
                 std::smatch agg_match;
@@ -2195,6 +2204,10 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
     std::vector<std::vector<std::string>> rows;
 
     bool has_empty_rows = true;
+
+    for (const auto& column_name : components.output_column_names) {
+        col_widths.push_back(column_name.length());
+    }
     
     root_op->open();
     while (root_op->next()) {
@@ -2210,11 +2223,7 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
             std::string val = ss.str();
             row.push_back(val);
             
-            if (col_widths.size() < row.size()) {
-                col_widths.push_back(val.length());
-            } else {
-                col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
-            }
+            col_widths[row.size()-1] = std::max(col_widths[row.size()-1], val.length());
         }
         rows.push_back(std::move(row));
     }
@@ -2225,23 +2234,27 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
         return;
     }
 
-    // Print table border
-    for (size_t width : col_widths) {
-        std::cout << '+' << std::string(width + 2, '-');
-    }
-    std::cout << "+\n";
+    const auto& print_row_separator = [&] {
+        for (size_t width : col_widths) {
+            std::cout << '+' << std::string(width + 2, '-');
+        }
+        std::cout << "+\n";
+    };
 
-    // Print rows
-    for (const auto& row : rows) {
+    const auto& print_row = [&] (const std::vector<std::string>& row) {
         for (size_t i = 0; i < row.size(); i++) {
             std::cout << "| " << std::left << std::setw(col_widths[i]) << row[i] << ' ';
         }
         std::cout << "|\n";
+    };
+
+    print_row_separator();
+    print_row(components.output_column_names);
+    print_row_separator();
+    for (const auto& row : rows) {
+        print_row(row);
     }
-    for (size_t width : col_widths) {
-        std::cout << '+' << std::string(width + 2, '-');
-    }
-    std::cout << "+\n";
+    print_row_separator();
     std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
 }
 
