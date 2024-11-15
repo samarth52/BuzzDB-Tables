@@ -18,7 +18,7 @@
 #include <regex>
 #include <stdexcept>
 
-enum FieldType { INT, FLOAT, STRING, NULLV };
+enum FieldType { NULLV, INT, FLOAT, STRING };
 
 // Define a basic Field variant class that can hold different types
 class Field {
@@ -1495,12 +1495,13 @@ public:
     std::string name;
     ColumnID idx;
     FieldType type;
+    bool not_null;
 
 public:
-    TableColumn(std::string name, ColumnID idx, FieldType type) : name(name), idx(idx), type(type) {}
+    TableColumn(std::string name, ColumnID idx, FieldType type, bool not_null) : name(name), idx(idx), type(type), not_null(not_null) {}
 
     friend std::ostream& operator<<(std::ostream& os, TableColumn const& column) {
-        return os << "Column idx=" << column.idx << " :: name=" << column.name << " :: type=" << column.type;
+        return os << "Column idx=" << column.idx << " :: name=" << column.name << " :: type=" << column.type << " :: not_null=" << column.not_null;
     }
 };
 using TableColumns = std::vector<std::unique_ptr<TableColumn>>;
@@ -1566,18 +1567,19 @@ static const TableID SYSTEM_COLUMN_TABLE_ID = 2;
 static const std::shared_ptr<TableSchema> SYSTEM_CLASS_SCHEMA = std::make_shared<TableSchema>("system_class", SYSTEM_CLASS_TABLE_ID,
     ([]{
         TableColumns columns;
-        columns.push_back(std::make_unique<TableColumn>("id", 0, FieldType::INT));
-        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
+        columns.push_back(std::make_unique<TableColumn>("id", 0, FieldType::INT, true));
+        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING, true));
         return columns;
     })()
 );
 static const std::shared_ptr<TableSchema> SYSTEM_COLUMN_SCHEMA = std::make_shared<TableSchema>("system_column", SYSTEM_COLUMN_TABLE_ID,
     ([]{
         TableColumns columns;
-        columns.push_back(std::make_unique<TableColumn>("table_id", 0, FieldType::INT));
-        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
-        columns.push_back(std::make_unique<TableColumn>("idx", 2, FieldType::INT));
-        columns.push_back(std::make_unique<TableColumn>("data_type", 3, FieldType::INT));
+        columns.push_back(std::make_unique<TableColumn>("table_id", 0, FieldType::INT, true));
+        columns.push_back(std::make_unique<TableColumn>("name", 1, FieldType::STRING, true));
+        columns.push_back(std::make_unique<TableColumn>("idx", 2, FieldType::INT, true));
+        columns.push_back(std::make_unique<TableColumn>("type", 3, FieldType::INT, true));
+        columns.push_back(std::make_unique<TableColumn>("not_null", 4, FieldType::INT, true));
         return columns;
     })()
 );
@@ -1699,13 +1701,14 @@ public:
         std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
 
         // Traverse through system_column and get all column metadata for given table_id
-        std::string table_column_query = std::format("SELECT name, idx, data_type FROM system_column WHERE table_id = {}", table_id);
+        std::string table_column_query = std::format("SELECT name, idx, type, not_null FROM system_column WHERE table_id = {}", table_id);
         auto table_column_tuples = plan_and_execute_query(buffer_manager, *this, table_column_query);
         for (auto& tuple : table_column_tuples) {
             std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
                 tuple->fields[0]->as_string(),
                 tuple->fields[1]->as_int(),
-                FieldType(tuple->fields[2]->as_int())
+                FieldType(tuple->fields[2]->as_int()),
+                tuple->fields[1]->as_int() == 0 ? false : true
             );
             table_schema->add_column(std::move(column));
         }
@@ -1746,7 +1749,8 @@ public:
         std::string separator = "";
         insert_system_column_query << "INSERT INTO system_column VALUES ";
         for (auto& column : table_schema->columns) {
-            insert_system_column_query << std::format("{}({}, {}, {}, {})", separator, table_id, column->name, column->idx, (int) column->type);
+            insert_system_column_query << separator;
+            insert_system_column_query << std::format("({}, {}, {}, {}, {})", table_id, column->name, column->idx, (int) column->type, (int) column->not_null);
             separator = ", ";
         }
         auto insert_system_column_res = plan_and_execute_query(buffer_manager, *this, insert_system_column_query.str());
@@ -2081,6 +2085,14 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     if (components.insert_columns.size() == 0 && field_idx != table_schema->columns.size()) {
                         throw std::invalid_argument("Size of new tuple does not match the number of columns in schema");
                     }
+                    if (components.insert_columns.size() != 0 && field_idx != components.insert_columns.size()) {
+                        throw std::invalid_argument("Size of new tuple does not match the number of columns in insert query");
+                    }
+                    for (size_t i = 0; i < table_schema->columns.size(); i++) {
+                        if (table_schema->columns[i]->not_null && tuple_fields[i]->type == NULLV) {
+                            throw std::invalid_argument("Column '" + table_schema->columns[i]->name + "' cannot be NULL");
+                        }
+                    }
                     components.insert_values.push_back(std::move(tuple_fields));
                 }
             } else {
@@ -2292,16 +2304,16 @@ public:
             "SELECT id, name FROM system_class",
             "INSERT INTO test_table_2 VALUES (5, 'hello')",
             "INSERT INTO test_table_2 VALUES (6, 'bye'), (7, 'oh'), (8, 'yo')",
-            "INSERT INTO test_table_2 (id, name) VALUES (9, 1), (10, 2)",
+            "INSERT INTO test_table_2 (id) VALUES (9), (10)",
             // "INSERT INTO test_table_2 VALUES (9, 'hello'), (10, 'bye'), (11)",
             "SELECT name FROM system_class",
             "SELECT SUM(id) FROM system_class WHERE id > 2 and id < 6 GROUP BY id",
-            "SELECT table_id, name, idx, data_type, * FROM system_column",
+            "SELECT table_id, name, idx, type, * FROM system_column",
             "SELECT * FROM system_column",
-            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id",
+            "SELECT SUM(idx), table_id, COUNT(type) FROM system_column GROUP BY table_id",
             "SELECT id, name FROM system_class WHERE id <> 1",
             "SELECT id, name FROM system_class WHERE id > 1 AND id < 3",
-            "SELECT SUM(idx), table_id, COUNT(data_type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
+            "SELECT SUM(idx), table_id, COUNT(type) FROM system_column GROUP BY table_id HAVING SUM(idx) < 6",
             "SELECT * FROM test_table_2",
             "SELECT * FROM test_table_2 WHERE name = '2'",
         };
@@ -2335,14 +2347,14 @@ int main() {
 
 
     std::shared_ptr<TableSchema> new_schema = std::make_shared<TableSchema>("test_table");
-    new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT));
-    new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING));
-    new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT));
+    new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT, true));
+    new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING, true));
+    new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT, true));
     db.table_manager.create_table(new_schema, false);
 
     std::shared_ptr<TableSchema> new_schema_2 = std::make_shared<TableSchema>("test_table_2");
-    new_schema_2->add_column(std::make_unique<TableColumn>("id", 0, FieldType::INT));
-    new_schema_2->add_column(std::make_unique<TableColumn>("name", 1, FieldType::STRING));
+    new_schema_2->add_column(std::make_unique<TableColumn>("id", 0, FieldType::INT, true));
+    new_schema_2->add_column(std::make_unique<TableColumn>("name", 1, FieldType::STRING, true));
     db.table_manager.create_table(new_schema_2, false);
 
     // assert(create_table_res == true);
