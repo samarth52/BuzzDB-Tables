@@ -1487,7 +1487,7 @@ public:
 };
 
 class TableManager;
-std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
+std::vector<std::unique_ptr<Tuple>> plan_and_execute_internal_query(
     BufferManager& buffer_manager,
     TableManager& table_manager,
     const std::string& query
@@ -1660,7 +1660,7 @@ public:
         }
 
         auto query = std::format("SELECT id FROM system_class WHERE name = '{}'", name);
-        auto output_tuples = plan_and_execute_query(buffer_manager, *this, query);
+        auto output_tuples = plan_and_execute_internal_query(buffer_manager, *this, query);
         if (output_tuples.size() == 0) {
             return std::numeric_limits<TableID>::max();
         }
@@ -1700,13 +1700,13 @@ public:
 
         // Traverse through system_class and get all metadata for given table_id
         std::string table_metadata_query = std::format("SELECT name FROM system_class WHERE id = {}", table_id);
-        auto table_metadata_tuple = std::move(plan_and_execute_query(buffer_manager, *this, table_metadata_query)[0]);
+        auto table_metadata_tuple = std::move(plan_and_execute_internal_query(buffer_manager, *this, table_metadata_query)[0]);
         std::string name = table_metadata_tuple->fields[0]->as_string();
         std::shared_ptr<TableSchema> table_schema = std::make_shared<TableSchema>(name, table_id);
 
         // Traverse through system_column and get all column metadata for given table_id
         std::string table_column_query = std::format("SELECT name, idx, type, not_null FROM system_column WHERE table_id = {}", table_id);
-        auto table_column_tuples = plan_and_execute_query(buffer_manager, *this, table_column_query);
+        auto table_column_tuples = plan_and_execute_internal_query(buffer_manager, *this, table_column_query);
         for (auto& tuple : table_column_tuples) {
             std::unique_ptr<TableColumn> column = std::make_unique<TableColumn>(
                 tuple->fields[0]->as_string(),
@@ -1734,7 +1734,7 @@ public:
         if (!is_bootstrap) {
             // Check if table exists
             std::string table_name_query = std::format("SELECT * FROM system_class WHERE name = '{}'", table_schema->name);
-            auto table_metadata_tuples = plan_and_execute_query(buffer_manager, *this, table_name_query);
+            auto table_metadata_tuples = plan_and_execute_internal_query(buffer_manager, *this, table_name_query);
             if (table_metadata_tuples.size() > 0) {
                 std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
                 return false;
@@ -1745,7 +1745,7 @@ public:
 
         // Insert table id and name in system_class
         std::string insert_system_class_query = std::format("INSERT INTO system_class VALUES ({}, {})", table_id, table_schema->name);
-        auto insert_system_class_res = plan_and_execute_query(buffer_manager, *this, insert_system_class_query);
+        auto insert_system_class_res = plan_and_execute_internal_query(buffer_manager, *this, insert_system_class_query);
         assert(insert_system_class_res.size() == 1);
 
         // Insert table columns in system_column
@@ -1757,24 +1757,30 @@ public:
             insert_system_column_query << std::format("({}, {}, {}, {}, {})", table_id, column->name, column->idx, (int) column->type, (int) column->not_null);
             separator = ", ";
         }
-        auto insert_system_column_res = plan_and_execute_query(buffer_manager, *this, insert_system_column_query.str());
+        auto insert_system_column_res = plan_and_execute_internal_query(buffer_manager, *this, insert_system_column_query.str());
         assert(insert_system_column_res.size() == table_schema->columns.size());
         table_schema->id = table_id;
 
         return true;
+    }
+
+    bool create_table(std::shared_ptr<TableSchema> table_schema) {
+        return create_table(table_schema, false);
     }
 };
 
 struct QueryComponents {
     enum class QueryType {
         SELECT,
-        INSERT
+        INSERT,
+        CREATE_TABLE
     };
     QueryType type;
 
     // Common components
     TableID table_id;
     std::vector<std::string> output_column_names;
+    bool is_ddl = false;
 
     // SELECT components
     std::vector<size_t> select_attributes;
@@ -1805,6 +1811,9 @@ struct QueryComponents {
     std::vector<std::string> insert_columns;
     std::vector<std::vector<std::unique_ptr<Field>>> insert_values;
     std::unique_ptr<QueryComponents> insert_select_query;
+
+    // CREATE TABLE components
+    std::shared_ptr<TableSchema> create_table_schema;
 };
 
 QueryComponents parse_query(TableManager& table_manager, const std::string& query) {
@@ -2196,7 +2205,23 @@ std::unique_ptr<Operator> plan_query(const QueryComponents& components, BufferMa
     }
 }
 
-void execute_query(const QueryComponents& components, BufferManager& buffer_manager) {
+void execute_query(TableManager& table_manager, BufferManager& buffer_manager, const QueryComponents& components) {
+    const auto& print_num_rows = [&](int num_rows) {
+        std::cout << std::format("({} row{})\n\n", num_rows, num_rows == 1 ? "" : "s");
+    };
+
+    if (components.is_ddl) {
+        switch (components.type) {
+            case QueryComponents::QueryType::CREATE_TABLE:
+                table_manager.create_table(components.create_table_schema);
+                break;
+            default:
+                throw std::invalid_argument("Query is not of DDL type.");
+        }
+        print_num_rows(0);
+        return;
+    }
+
     std::unique_ptr<Operator> root_op = plan_query(components, buffer_manager);
     
     // Get column widths by examining first row
@@ -2230,7 +2255,7 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
     root_op->close();
 
     if (has_empty_rows) {
-        std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
+        print_num_rows(rows.size());
         return;
     }
 
@@ -2255,10 +2280,10 @@ void execute_query(const QueryComponents& components, BufferManager& buffer_mana
         print_row(row);
     }
     print_row_separator();
-    std::cout << std::format("({} row{})\n\n", rows.size(), rows.size() == 1 ? "" : "s");
+    print_num_rows(rows.size());
 }
 
-std::vector<std::unique_ptr<Tuple>> plan_and_execute_query(
+std::vector<std::unique_ptr<Tuple>> plan_and_execute_internal_query(
     BufferManager& buffer_manager,
     TableManager& table_manager,
     const std::string& query
@@ -2346,7 +2371,7 @@ public:
             std::cout << "Executing query :: " << query << std::endl;
             auto components = parse_query(table_manager, query);
             //pretty_print(components);
-            execute_query(components, buffer_manager);
+            execute_query(table_manager, buffer_manager, components);
         }
     }
 
@@ -2373,7 +2398,7 @@ public:
 
             try {
                 auto components = parse_query(table_manager, query);
-                execute_query(components, buffer_manager);
+                execute_query(table_manager, buffer_manager, components);
             } catch (const std::exception& e) {
                 std::cerr << "Error: " << e.what() << std::endl;
             }
