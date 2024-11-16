@@ -1684,6 +1684,8 @@ static const std::shared_ptr<TableSchema> SYSTEM_COLUMN_SCHEMA = std::make_share
 constexpr size_t MAX_SCHEMAS_IN_MEMORY = 2 << 8;
 constexpr size_t MAX_NAMES_IN_MEMORY = 2 << 12;
 class TableManager {
+public:
+    static const TableID NUM_SYSTEM_TABLES = 3;
 private:
     BufferManager& buffer_manager;
     TableID next_table_id;
@@ -1693,8 +1695,6 @@ private:
 
     std::unique_ptr<LruPolicy<std::string>> name_policy;
     std::unordered_map<std::string, TableID> name_map;
-
-    static const TableID NUM_SYSTEM_TABLES = 3;
 
     void bootstrap_system_tables() {
         bootstrap_system_next_table_id();
@@ -1945,7 +1945,7 @@ struct QueryComponents {
     std::shared_ptr<TableSchema> create_table_schema;
 };
 
-QueryComponents parse_query(TableManager& table_manager, const std::string& query) {
+QueryComponents parse_query(TableManager& table_manager, const std::string& query, bool is_admin) {
     QueryComponents components;
 
     // Determine query type
@@ -2181,6 +2181,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             if (components.table_id == std::numeric_limits<TableID>::max()) {
                 throw std::invalid_argument("Table does not exist: " + table_name);
             }
+            if (components.table_id < TableManager::NUM_SYSTEM_TABLES && !is_admin) {
+                throw std::invalid_argument("Cannot perform INSERT queries on system tables :: Insufficient permissions.");
+            }
             auto table_schema = table_manager.get_table_schema(components.table_id);
 
             // Parse column names if specified
@@ -2263,7 +2266,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             } else {
                 // Parse SELECT
                 std::string select_query = query.substr(query.find("SELECT"));
-                components.insert_select_query = std::make_unique<QueryComponents>(parse_query(table_manager, select_query));
+                components.insert_select_query = std::make_unique<QueryComponents>(parse_query(table_manager, select_query, is_admin));
                 if (components.table_id == components.insert_select_query->table_id) {
                     throw std::invalid_argument("Cannot insert tuples from the same table");
                 }
@@ -2283,6 +2286,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             components.table_id = table_manager.get_table_id(table_name);
             if (components.table_id == std::numeric_limits<TableID>::max()) {
                 throw std::invalid_argument("Table does not exist: " + table_name);
+            }
+            if (components.table_id < TableManager::NUM_SYSTEM_TABLES && !is_admin) {
+                throw std::invalid_argument("Cannot perform DELETE queries on system tables :: Insufficient permissions.");
             }
 
             auto table_schema = table_manager.get_table_schema(components.table_id);
@@ -2392,6 +2398,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             components.table_id = table_manager.get_table_id(table_name);
             if (components.table_id == std::numeric_limits<TableID>::max()) {
                 throw std::invalid_argument("Table does not exist: " + table_name);
+            }
+            if (components.table_id < TableManager::NUM_SYSTEM_TABLES && !is_admin) {
+                throw std::invalid_argument("Cannot perform DROP TABLE queries on system tables :: Insufficient permissions.");
             }
         }
     } else {
@@ -2574,7 +2583,7 @@ std::vector<std::unique_ptr<Tuple>> plan_and_execute_internal_query(
     const std::string& query
 ) {
     // std::cout << "Executing sub-query :: " << query << std::endl;
-    auto components = parse_query(table_manager, query);
+    auto components = parse_query(table_manager, query, true);
     auto root_op = plan_query(components, buffer_manager);
     std::vector<std::unique_ptr<Tuple>> output_copy;
 
@@ -2654,7 +2663,7 @@ public:
 
         for (const auto& query : test_queries) {
             std::cout << "Executing query :: " << query << std::endl;
-            auto components = parse_query(table_manager, query);
+            auto components = parse_query(table_manager, query, false);
             //pretty_print(components);
             execute_query(table_manager, buffer_manager, components);
         }
@@ -2698,7 +2707,7 @@ public:
                 query = query.substr(0, query.find_first_of(";"));
 
                 try {
-                    auto components = parse_query(table_manager, query);
+                    auto components = parse_query(table_manager, query, false);
                     execute_query(table_manager, buffer_manager, components);
                 } catch (const std::exception& e) {
                     std::cerr << "Error: " << e.what() << "\n\n";
