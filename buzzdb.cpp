@@ -1951,7 +1951,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
     // Determine query type
     if (query.substr(0, 6) == "SELECT") {
         components.type = QueryComponents::QueryType::SELECT;
-        std::regex table_regex("FROM (\\w+)");
+        std::regex table_regex("FROM\\s+(\\w+)");
         std::smatch table_match;
         if (std::regex_search(query, table_match, table_regex)) {
             std::string table_name = table_match[1].str();
@@ -1967,7 +1967,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         std::regex delimiter_regex(", ");
 
         // Parse GROUP BY
-        std::regex group_by_regex("GROUP BY (\\w+(?:, \\w+)*)");
+        std::regex group_by_regex("GROUP BY\\s+(\\w+(?:\\s*,\\s*\\w+)*)");
         std::smatch group_by_match;
         if (std::regex_search(query, group_by_match, group_by_regex)) {
             if (!group_by_match[1].str().empty()) {
@@ -1987,7 +1987,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         }
 
         // Parse SELECT clause
-        std::regex select_regex("SELECT ((?:\\w+\\(\\w+\\)|\\w+|\\*)(?:, (?:\\w+\\(\\w+\\)|\\w+|\\*))*)");
+        std::regex select_regex("SELECT\\s+((?:\\w+\\(\\w+\\)|\\w+|\\*)(?:\\s*,\\s*(?:\\w+\\(\\w+\\)|\\w+|\\*))*)");
         std::regex agg_regex("(\\w+)\\((\\w+)\\)");
         std::smatch select_matches;
         std::string::const_iterator query_start(query.cbegin());
@@ -2073,11 +2073,11 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         }
 
         // Parse WHERE conditions
-        std::regex where_regex("WHERE (\\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*')(?: AND \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*'))*)");
+        std::regex where_regex("WHERE\\s+(\\w+\\s*[<>=]+\\s*(?:\\d+|\\d+\\.\\d+|'[^']*')(?:\\s+AND\\s+\\w+\\s*[<>=]+\\s*(?:\\d+|\\d+\\.\\d+|'[^']*'))*)");
         std::smatch where_matches;
         if (std::regex_search(query, where_matches, where_regex) && !where_matches[1].str().empty()) {
             std::string where_clause = where_matches[1].str();
-            std::regex cond_regex("(\\w+) ([<>=]+) (\\d+|\\d+\\.\\d+|'[^']*')");
+            std::regex cond_regex("(\\w+)\\s*([<>=]+)\\s*(\\d+|\\d+\\.\\d+|'[^']*')");
             std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
             std::sregex_iterator end;
 
@@ -2124,11 +2124,11 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         }
 
         // Parse HAVING conditions
-        std::regex having_regex("HAVING (\\w+\\(\\w+\\) [<>=]+ \\d+(?: AND \\w+\\(\\w+\\) [<>=]+ \\d+)*)");
+        std::regex having_regex("HAVING\\s+(\\w+\\(\\w+\\)\\s*[<>=]+\\s*\\d+(?:\\s+AND\\s+\\w+\\(\\w+\\)\\s*[<>=]+\\s*\\d+)*)");
         std::smatch having_matches;
         if (std::regex_search(query, having_matches, having_regex) && !having_matches[1].str().empty()) {
             std::string having_clause = having_matches[1].str();
-            std::regex cond_regex("(\\w+)\\((\\w+)\\) ([<>=]+) (\\d+)");
+            std::regex cond_regex("(\\w+)\\((\\w+)\\)\\s*([<>=]+)\\s*(\\d+)");
             std::sregex_iterator begin(having_clause.begin(), having_clause.end(), cond_regex);
             std::sregex_iterator end;
 
@@ -2171,7 +2171,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         components.type = QueryComponents::QueryType::INSERT;
         
         // Parse INSERT query
-        std::regex insert_regex("INSERT INTO (\\w+)(?:\\s*\\(((?:\\w+(?:,\\s*\\w+)*)*)\\))?\\s*(VALUES\\s*\\((.*?)\\)(?:\\s*,\\s*\\((.*?)\\))*|SELECT .*)");
+        std::regex insert_regex("INSERT INTO\\s+(\\w+)(?:\\s*\\(((?:\\w+(?:,\\s*\\w+)*)*)\\))?\\s*(VALUES\\s*\\((.*?)\\)(?:\\s*,\\s*\\((.*?)\\))*|SELECT .*)");
         std::smatch insert_match;
         
         if (std::regex_search(query, insert_match, insert_regex)) {
@@ -2270,6 +2270,16 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 if (components.table_id == components.insert_select_query->table_id) {
                     throw std::invalid_argument("Cannot insert tuples from the same table");
                 }
+
+                size_t select_query_output_size = components.insert_select_query->output_columns.size();
+                if (select_query_output_size != table_schema->columns.size()) {
+                    throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns in schema ({})", select_query_output_size, table_schema->columns.size()));
+                }
+                for (size_t i = 0; i < table_schema->columns.size(); i++) {
+                    if (table_schema->columns[i]->type != components.insert_select_query->output_columns[i].type) {
+                        throw std::invalid_argument("Invalid type provided for column '" + table_schema->columns[i]->name + "'.");
+                    }
+                }
             }
         } else {
             throw std::invalid_argument("Invalid INSERT query syntax");
@@ -2278,7 +2288,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         components.type = QueryComponents::QueryType::DELETE;
 
         // Parse DELETE FROM query
-        std::regex delete_regex("DELETE FROM (\\w+)( WHERE \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*')(?: AND \\w+ [<>=]+ (?:\\d+|\\d+\\.\\d+|'[^']*'))*)?");
+        std::regex delete_regex("DELETE FROM\\s+(\\w+)(\\s+WHERE\\s+\\w+\\s*[<>=]+\\s*(?:\\d+|\\d+\\.\\d+|'[^']*')(?:\\s+AND\\s+\\w+\\s*[<>=]+\\s*(?:\\d+|\\d+\\.\\d+|'[^']*'))*)?");
         std::smatch delete_match;
 
         if (std::regex_search(query, delete_match, delete_regex)) {
@@ -2296,7 +2306,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
             // Parse WHERE clause if it exists
             if (delete_match[2].matched) {
                 std::string where_clause = delete_match[2].str();
-                std::regex cond_regex("(\\w+) ([<>=]+) (\\d+|\\d+\\.\\d+|'[^']*')");
+                std::regex cond_regex("(\\w+)\\s*([<>=]+)\\s*(\\d+|\\d+\\.\\d+|'[^']*')");
                 std::sregex_iterator begin(where_clause.begin(), where_clause.end(), cond_regex);
                 std::sregex_iterator end;
 
@@ -2349,7 +2359,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         components.is_ddl = true;
 
         // Parse CREATE TABLE query
-        std::regex create_table_regex("CREATE TABLE (\\w+)\\s*\\((.*?)\\)");
+        std::regex create_table_regex("CREATE TABLE\\s+(\\w+)\\s*\\((.*?)\\)");
         std::smatch create_table_match;
 
         if (std::regex_search(query, create_table_match, create_table_regex)) {
@@ -2390,7 +2400,7 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
         components.is_ddl = true;
 
         // Parse DROP TABLE query
-        std::regex drop_table_regex("DROP TABLE (\\w+)");
+        std::regex drop_table_regex("DROP TABLE\\s+(\\w+)");
         std::smatch drop_table_match;
 
         if (std::regex_search(query, drop_table_match, drop_table_regex)) {
