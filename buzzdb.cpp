@@ -1832,7 +1832,7 @@ public:
             std::string table_name_query = std::format("SELECT * FROM system_class WHERE name = '{}'", table_schema->name);
             auto table_metadata_tuples = plan_and_execute_internal_query(buffer_manager, *this, table_name_query);
             if (table_metadata_tuples.size() > 0) {
-                std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
+                // std::cerr << "Table " << table_schema->name << " already exists in the database" << std::endl;
                 return false;
             }
         }
@@ -2368,10 +2368,9 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
 
             // Create new table schema
             auto schema = std::make_shared<TableSchema>(table_name);
-            TableColumns columns;
 
             // Parse column definitions
-            std::regex column_regex("(\\w+)\\s+(INT|STRING|FLOAT)(?:\\s+NOT\\s+NULL)?");
+            std::regex column_regex("(\\w+)\\s+(INT|STRING|FLOAT)(?:\\s+NOT NULL)?");
             std::sregex_iterator column_begin(columns_str.begin(), columns_str.end(), column_regex);
             std::sregex_iterator column_end;
 
@@ -2387,10 +2386,8 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 else if (type_str == "FLOAT") type = FieldType::FLOAT;
                 else throw std::invalid_argument("Invalid column type: " + type_str);
 
-                columns.push_back(std::make_unique<TableColumn>(col_name, idx++, type, not_null));
+                schema->add_column(std::make_unique<TableColumn>(col_name, idx++, type, not_null));
             }
-
-            schema->columns = std::move(columns);
             components.create_table_schema = schema;
         } else {
             throw std::invalid_argument("Invalid CREATE TABLE syntax");
@@ -2526,9 +2523,13 @@ void execute_query(TableManager& table_manager, BufferManager& buffer_manager, c
 
     if (components.is_ddl) {
         switch (components.type) {
-            case QueryComponents::QueryType::CREATE_TABLE:
-                table_manager.create_table(components.create_table_schema);
+            case QueryComponents::QueryType::CREATE_TABLE: {
+                bool res = table_manager.create_table(components.create_table_schema);
+                if (!res) {
+                    throw std::invalid_argument("Table '" + components.create_table_schema->name + "' already exists in the database");
+                }
                 break;
+            }
             case QueryComponents::QueryType::DROP_TABLE:
                 table_manager.drop_table(components.table_id);
                 break;
