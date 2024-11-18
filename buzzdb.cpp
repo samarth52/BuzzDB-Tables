@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <iostream>
+#include <unordered_set>
 #include <vector>
 #include <fstream>
 #include <iostream>
@@ -1945,7 +1946,7 @@ struct QueryComponents {
     std::vector<HavingCondition> having_conditions;
 
     // INSERT components
-    std::vector<std::string> insert_columns;
+    std::vector<ColumnID> insert_columns;
     std::vector<std::vector<std::unique_ptr<Field>>> insert_values;
     std::unique_ptr<QueryComponents> insert_select_query;
 
@@ -2201,7 +2202,21 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                 std::sregex_iterator col_begin(cols.begin(), cols.end(), col_regex);
                 std::sregex_iterator col_end;
                 for (auto it = col_begin; it != col_end; ++it) {
-                    components.insert_columns.push_back(it->str());
+                    size_t column_idx = table_schema->find_column_idx(it->str());
+                    if (column_idx == INVALID_VALUE) {
+                        throw std::invalid_argument("Column not found: " + it->str());
+                    }
+                    if (std::find(components.insert_columns.begin(), components.insert_columns.end(), column_idx) != components.insert_columns.end()) {
+                        throw std::invalid_argument(std::format("Cannot have duplicate column '{}' in INSERT query", it->str()));
+                    }
+                    components.insert_columns.push_back(column_idx);
+                }
+                if (components.insert_columns.size() == 0) {
+                    throw std::invalid_argument("Number of INSERT columns cannot be 0");
+                }
+            } else {
+                for (size_t column_idx = 0; column_idx < table_schema->columns.size(); column_idx++) {
+                    components.insert_columns.push_back(column_idx);
                 }
             }
 
@@ -2224,45 +2239,36 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
                     }
                     size_t field_idx = 0;
                     for (auto field_it = field_begin; field_it != field_end; ++field_it, ++field_idx) {
+                        if (field_idx >= components.insert_columns.size()) {
+                            throw std::invalid_argument(std::format("Size of new tuple does not match the number of columns ({})", components.insert_columns.size()));
+                        }
                         std::string value = field_it->str();
                         // Trim whitespace
                         value.erase(0, value.find_first_not_of(" \t"));
                         value.erase(value.find_last_not_of(" \t") + 1);
 
-                        size_t column_idx = field_idx;
-
-                        if (!components.insert_columns.empty()) {
-                            size_t column_idx = table_schema->find_column_idx(components.insert_columns[field_idx]);
-                            if (column_idx == INVALID_VALUE) {
-                                throw std::invalid_argument("Column not found: " + components.insert_columns[field_idx]);
-                            }
-                        }
-
-                        FieldType field_type = table_schema->columns[column_idx]->type;
+                        FieldType field_type = table_schema->columns[components.insert_columns[field_idx]]->type;
 
                         switch (field_type) {
                             case FieldType::INT:
-                                tuple_fields[column_idx] = std::make_unique<Field>(std::stoi(value));
+                                tuple_fields[field_idx] = std::make_unique<Field>(std::stoi(value));
                                 break;
                             case FieldType::FLOAT:
-                                tuple_fields[column_idx] = std::make_unique<Field>(std::stof(value));
+                                tuple_fields[field_idx] = std::make_unique<Field>(std::stof(value));
                                 break;
                             case FieldType::STRING:
                                 // Remove quotes if present
                                 if (value.front() == '"' || value.front() == '\'') {
                                     value = value.substr(1, value.length() - 2);
                                 }
-                                tuple_fields[column_idx] = std::make_unique<Field>(value);
+                                tuple_fields[field_idx] = std::make_unique<Field>(value);
                                 break;
                             default:
                                 throw std::invalid_argument("Field not implemented");
                         }
                     }
-                    if (components.insert_columns.size() == 0 && field_idx != table_schema->columns.size()) {
-                        throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns in schema ({})", field_idx, table_schema->columns.size()));
-                    }
-                    if (components.insert_columns.size() != 0 && field_idx != components.insert_columns.size()) {
-                        throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns in insert query ({})", field_idx, components.insert_columns.size()));
+                    if (field_idx != components.insert_columns.size()) {
+                        throw std::invalid_argument(std::format("Size of new tuple ({}) does not match the number of columns ({})", field_idx, components.insert_columns.size()));
                     }
                     for (size_t i = 0; i < table_schema->columns.size(); i++) {
                         if (table_schema->columns[i]->not_null && tuple_fields[i]->type == NULLV) {
