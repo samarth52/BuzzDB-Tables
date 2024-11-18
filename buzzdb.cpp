@@ -630,6 +630,14 @@ public:
     BufferManager(): 
     policy(std::make_unique<LruPolicy<TablePageIDs>>(MAX_PAGES_IN_MEMORY, TablePageIDs(INVALID_VALUE, INVALID_VALUE))) {}
 
+    ~BufferManager() {
+        for (auto& [table_page_id, _] : page_map) {
+            auto& [table_id, page_id] = table_page_id;
+            flush_page(table_id, page_id);
+        }
+        page_map.clear();
+    }
+
     bool file_exists(TableID table_id) {
         return storage_manager.file_exists(table_id);
     }
