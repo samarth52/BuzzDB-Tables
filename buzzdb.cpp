@@ -2754,9 +2754,9 @@ int main() {
     // std::cout << *schema2 << std::endl;
 
     std::shared_ptr<TableSchema> new_schema = std::make_shared<TableSchema>("test_table");
-    new_schema->add_column(std::make_unique<TableColumn>("hello", 1, FieldType::INT, true));
-    new_schema->add_column(std::make_unique<TableColumn>("there", 0, FieldType::STRING, true));
-    new_schema->add_column(std::make_unique<TableColumn>("buddy", 2, FieldType::FLOAT, true));
+    new_schema->add_column(std::make_unique<TableColumn>("col1", 0, FieldType::INT, true));
+    new_schema->add_column(std::make_unique<TableColumn>("col2", 1, FieldType::STRING, true));
+    new_schema->add_column(std::make_unique<TableColumn>("col3", 2, FieldType::FLOAT, true));
     db.table_manager.create_table(new_schema, false);
 
     std::shared_ptr<TableSchema> new_schema_2 = std::make_shared<TableSchema>("test_table_2");
@@ -2766,8 +2766,8 @@ int main() {
 
     // assert(create_table_res == true);
 
-    auto schema3 = db.table_manager.get_table_schema("test_table");
-    auto schema4 = db.table_manager.get_table_schema("test_table");
+    // auto schema3 = db.table_manager.get_table_schema("test_table");
+    // auto schema4 = db.table_manager.get_table_schema("test_table");
 
     // std::cout << *schema3 << std::endl;
     // std::cout << *schema4 << std::endl;
