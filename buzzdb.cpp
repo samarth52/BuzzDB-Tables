@@ -2251,17 +2251,17 @@ QueryComponents parse_query(TableManager& table_manager, const std::string& quer
 
                         switch (field_type) {
                             case FieldType::INT:
-                                tuple_fields[field_idx] = std::make_unique<Field>(std::stoi(value));
+                                tuple_fields[components.insert_columns[field_idx]] = std::make_unique<Field>(std::stoi(value));
                                 break;
                             case FieldType::FLOAT:
-                                tuple_fields[field_idx] = std::make_unique<Field>(std::stof(value));
+                                tuple_fields[components.insert_columns[field_idx]] = std::make_unique<Field>(std::stof(value));
                                 break;
                             case FieldType::STRING:
                                 // Remove quotes if present
                                 if (value.front() == '"' || value.front() == '\'') {
                                     value = value.substr(1, value.length() - 2);
                                 }
-                                tuple_fields[field_idx] = std::make_unique<Field>(value);
+                                tuple_fields[components.insert_columns[field_idx]] = std::make_unique<Field>(value);
                                 break;
                             default:
                                 throw std::invalid_argument("Field not implemented");
